@@ -65,6 +65,16 @@ logger.info("✅ KB Standalone API initialized")
 
 
 # ============================================================================
+# HEALTH CHECK ENDPOINT
+# ============================================================================
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring and deployment platforms."""
+    return {"status": "healthy", "service": "KB Standalone API"}
+
+
+# ============================================================================
 # KNOWLEDGE BASE ENDPOINTS
 # ============================================================================
 
