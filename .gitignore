@@ -18,6 +18,8 @@ node_modules/
 npm-debug.log
 yarn-error.log
 .pnp.*
+.next/
+out/
 
 # Environment variables
 .env
