@@ -14,6 +14,7 @@ Date: 2025-12-31
 import logging
 import os
 import re
+import time
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 import numpy as np  # Keep for type hints in old RAG methods
@@ -27,6 +28,28 @@ from langchain.agents import AgentType
 
 # Setup logging
 logger = logging.getLogger(__name__)
+
+# SQL Agent Timeout Configurations
+TIMEOUT_CONFIGS = {
+    'simple': {
+        'max_iterations': 15,
+        'max_execution_time': 90,  # 1.5 minutes
+    },
+    'moderate': {
+        'max_iterations': 25,
+        'max_execution_time': 150,  # 2.5 minutes
+    },
+    'complex': {
+        'max_iterations': 35,
+        'max_execution_time': 240,  # 4 minutes
+    }
+}
+
+# Retry Configuration
+RETRY_CONFIG = {
+    'max_retries': 3,
+    'backoff_multiplier': 2,  # 2s, 4s, 8s
+}
 
 
 class KnowledgeBaseRAG:
@@ -78,6 +101,99 @@ class KnowledgeBaseRAG:
         cleaned = re.sub(pattern, r'\1', response)
 
         return cleaned
+
+    def _classify_error_type(self, error: Exception) -> Dict[str, Any]:
+        """
+        Classify error to determine retry strategy.
+
+        Returns dict with:
+        - error_type: 'timeout' | 'parsing' | 'database' | 'rate_limit' | 'other'
+        - should_retry: bool
+        - wait_seconds: int (for backoff)
+        - user_message: str
+        """
+        error_str = str(error).lower()
+
+        # Timeout errors
+        if any(pattern in error_str for pattern in [
+            'iteration limit', 'time limit', 'timed out', 'timeout'
+        ]):
+            return {
+                'error_type': 'timeout',
+                'should_retry': True,
+                'wait_seconds': 0,
+                'user_message': 'Query taking longer than expected, retrying with extended timeout...'
+            }
+
+        # Parsing errors
+        if any(pattern in error_str for pattern in [
+            'could not parse', 'parsing error', 'invalid format'
+        ]):
+            return {
+                'error_type': 'parsing',
+                'should_retry': True,
+                'wait_seconds': 2,
+                'user_message': 'Reformatting query, please wait...'
+            }
+
+        # Rate limit errors
+        if any(pattern in error_str for pattern in [
+            'rate limit', '429', 'too many requests'
+        ]):
+            return {
+                'error_type': 'rate_limit',
+                'should_retry': True,
+                'wait_seconds': 10,
+                'user_message': 'API rate limit reached, waiting before retry...'
+            }
+
+        # Database errors (don't retry)
+        if any(pattern in error_str for pattern in [
+            'syntax error', 'does not exist', 'permission denied'
+        ]):
+            return {
+                'error_type': 'database',
+                'should_retry': False,
+                'wait_seconds': 0,
+                'user_message': 'Database query error'
+            }
+
+        # Other errors
+        return {
+            'error_type': 'other',
+            'should_retry': True,
+            'wait_seconds': 2,
+            'user_message': 'Unexpected error, retrying...'
+        }
+
+    def _classify_query_complexity(self, query: str) -> str:
+        """
+        Analyze query to determine timeout configuration.
+
+        Returns: 'simple' | 'moderate' | 'complex'
+        """
+        complexity_score = 0
+        query_upper = query.upper()
+
+        # Indicators of complexity
+        if 'JOIN' in query_upper:
+            complexity_score += 2
+        if 'GROUP BY' in query_upper:
+            complexity_score += 1
+        if 'HAVING' in query_upper:
+            complexity_score += 2
+        if query_upper.count('SELECT') > 1:  # Subqueries
+            complexity_score += 3
+        if any(word in query for word in ['last', 'previous', 'year', 'month']):
+            complexity_score += 1  # Temporal queries need more reasoning
+
+        # Classify
+        if complexity_score <= 2:
+            return 'simple'
+        elif complexity_score <= 5:
+            return 'moderate'
+        else:
+            return 'complex'
 
     def query_kb(
         self,
@@ -225,21 +341,6 @@ class KnowledgeBaseRAG:
                     "I should respond with 'Final Answer:' followed by the complete answer to the user's question."
                 )
 
-            # Create SQL agent
-            sql_agent = create_sql_agent(
-                llm=self.llm,
-                toolkit=toolkit,
-                agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-                verbose=True,
-                handle_parsing_errors=handle_parsing_error,
-                max_iterations=10,
-                max_execution_time=60,
-                agent_kwargs={
-                    "system_message": system_message,
-                    "prefix": f"Answer the question about data in the available table(s)."
-                }
-            )
-
             # Step 4: Check if visualization is requested
             viz_info = self._should_generate_visualization(query)
 
@@ -255,37 +356,94 @@ class KnowledgeBaseRAG:
                     conversation_history=conversation_history
                 )
 
-            # BRANCH: No visualization - use SQL agent
-            logger.info(f"🔄 Executing SQL agent...")
+            # BRANCH: No visualization - use SQL agent with retry logic
+            logger.info(f"🔄 Executing SQL agent with retry logic...")
 
+            # Classify query complexity
+            complexity = self._classify_query_complexity(enhanced_query)
+            logger.info(f"Query complexity: {complexity}")
+
+            # Initialize variables for retry loop
             answer = ""
             intermediate_steps = []
             sql_queries = []
             agent_error = None
+            attempt = 0
+            max_retries = RETRY_CONFIG['max_retries']
 
-            try:
-                # IMPORTANT: Use enhanced_query instead of original query
-                result = sql_agent.invoke({"input": enhanced_query})
-                answer = result.get("output", "")
-                answer = self._remove_decimals_from_response(answer)
-                intermediate_steps = result.get("intermediate_steps", [])
+            # Try with progressive retry
+            while attempt < max_retries:
+                try:
+                    # Select timeout config based on attempt
+                    if attempt == 0:
+                        config = TIMEOUT_CONFIGS[complexity]
+                    else:
+                        # Use more relaxed config for retries
+                        config = TIMEOUT_CONFIGS['complex']
 
-                # Extract SQL queries from intermediate steps
-                for step in intermediate_steps:
-                    if isinstance(step, tuple) and len(step) > 0:
-                        action = step[0]
-                        if hasattr(action, 'tool_input'):
-                            sql_queries.append(action.tool_input)
+                    logger.info(f"Attempt {attempt + 1}/{max_retries} with config: max_iterations={config['max_iterations']}, max_execution_time={config['max_execution_time']}s")
 
-                logger.info(f"✅ SQL agent completed. Generated {len(sql_queries)} queries")
+                    # Create SQL agent with current config
+                    sql_agent = create_sql_agent(
+                        llm=self.llm,
+                        toolkit=toolkit,
+                        agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+                        verbose=True,
+                        handle_parsing_errors=handle_parsing_error,
+                        max_iterations=config['max_iterations'],
+                        max_execution_time=config['max_execution_time'],
+                        agent_kwargs={
+                            "system_message": system_message,
+                            "prefix": f"Answer the question about data in the available table(s)."
+                        }
+                    )
 
-            except Exception as e:
-                logger.error(f"❌ SQL agent error: {e}")
-                agent_error = str(e)
+                    # Execute agent
+                    result = sql_agent.invoke({"input": enhanced_query})
+                    answer = result.get("output", "")
+                    answer = self._remove_decimals_from_response(answer)
+                    intermediate_steps = result.get("intermediate_steps", [])
+
+                    # Extract SQL queries from intermediate steps
+                    for step in intermediate_steps:
+                        if isinstance(step, tuple) and len(step) > 0:
+                            action = step[0]
+                            if hasattr(action, 'tool_input'):
+                                sql_queries.append(action.tool_input)
+
+                    logger.info(f"✅ SQL agent succeeded on attempt {attempt + 1}. Generated {len(sql_queries)} queries")
+                    break  # Success! Exit retry loop
+
+                except Exception as e:
+                    agent_error = str(e)
+                    logger.error(f"❌ SQL agent error on attempt {attempt + 1}: {agent_error}")
+
+                    # Classify error
+                    error_info = self._classify_error_type(e)
+                    logger.info(f"Error classified as: {error_info['error_type']}")
+
+                    # Check if should retry
+                    if not error_info['should_retry'] or attempt == max_retries - 1:
+                        logger.error(f"Not retrying. Error type: {error_info['error_type']}")
+                        break
+
+                    # Wait before retry (exponential backoff)
+                    wait_time = error_info['wait_seconds'] + (RETRY_CONFIG['backoff_multiplier'] ** attempt)
+                    logger.info(f"Waiting {wait_time}s before retry...")
+                    time.sleep(wait_time)
+
+                    attempt += 1
+
+            # If all retries failed
+            if agent_error and attempt == max_retries:
+                logger.error(f"❌ All {max_retries} attempts failed")
                 return {
                     'error': agent_error,
-                    'response': f"I encountered an error: {agent_error}",
-                    'sources': []
+                    'response': f"I encountered an error after {max_retries} attempts: {agent_error}\n\nThis query may be too complex. Try simplifying your question or breaking it into smaller parts.",
+                    'sources': [],
+                    'method': 'sql_agent_failed',
+                    'tables_queried': [table_info['filename'] for table_info in tables_info],
+                    'num_sources': 0
                 }
 
             # Track which tables were actually queried
