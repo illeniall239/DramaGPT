@@ -335,7 +335,7 @@ export default function KBChatInterface({
                                 <div className="flex items-center gap-2 pt-1">
                                     <Loader2 className="w-4 h-4 animate-spin text-primary" />
                                     <span className="text-sm text-muted-foreground">
-                                        Searching knowledge base...
+                                        Analyzing...
                                     </span>
                                 </div>
                             </div>
