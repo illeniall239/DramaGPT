@@ -31,7 +31,7 @@ except ImportError:
 
     settings = type('Settings', (), {
         'LLM': ChatGroq(
-            model="",  # 128k context window!
+            model="llama-3.3-70b-versatile",  # 128k context window!
             temperature=0.0,  # ✅ Deterministic responses
             groq_api_key=groq_api_key,
             max_tokens=8000,

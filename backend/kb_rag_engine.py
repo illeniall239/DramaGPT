@@ -57,6 +57,28 @@ class KnowledgeBaseRAG:
 
         logger.info("✅ KB engine ready (SQL agent mode)")
 
+    def _remove_decimals_from_response(self, response: str) -> str:
+        """
+        Remove decimal places from numeric values in AI responses.
+
+        Converts: "GRPS is 3159.682" → "GRPS is 3159"
+        Preserves: Version numbers like "3.14.2" (word boundaries prevent matching)
+
+        Args:
+            response: AI-generated response text
+
+        Returns:
+            Response with decimals removed from standalone numbers
+        """
+        # Pattern matches standalone numbers with decimals
+        # \b ensures word boundaries (won't match version numbers like "3.14.2")
+        pattern = r'\b(\d+)\.\d+\b'
+
+        # Replace with just the integer part
+        cleaned = re.sub(pattern, r'\1', response)
+
+        return cleaned
+
     def query_kb(
         self,
         kb_id: str,
@@ -176,6 +198,8 @@ class KnowledgeBaseRAG:
 7. Be precise - return exact numbers, not approximations
 8. Provide clear, complete answers with data
 9. **Resolve pronouns and references using conversation context above**
+10. **FORMAT NUMBERS AS WHOLE INTEGERS - do not include decimal places in your responses**
+    Example: Say "GRPS is 3159" NOT "GRPS is 3159.682"
 
 **Pronoun Resolution Examples:**
 - Previous: "Huma Nafees has highest GRPs"
@@ -243,6 +267,7 @@ class KnowledgeBaseRAG:
                 # IMPORTANT: Use enhanced_query instead of original query
                 result = sql_agent.invoke({"input": enhanced_query})
                 answer = result.get("output", "")
+                answer = self._remove_decimals_from_response(answer)
                 intermediate_steps = result.get("intermediate_steps", [])
 
                 # Extract SQL queries from intermediate steps
@@ -460,6 +485,7 @@ Provide ONLY the description text."""
 
             desc_response = self.llm.invoke(description_prompt)
             description = desc_response.content.strip().replace('**', '').replace('*', '').strip('"').strip("'")
+            description = self._remove_decimals_from_response(description)
 
             # Step 5: Generate text summary
             summary_prompt = f"""Based on this query and data, provide a brief (2-3 sentences) summary.
@@ -472,6 +498,7 @@ Provide ONLY the summary text."""
 
             summary_response = self.llm.invoke(summary_prompt)
             summary = summary_response.content.strip()
+            summary = self._remove_decimals_from_response(summary)
 
             # Build response
             response_dict = {
