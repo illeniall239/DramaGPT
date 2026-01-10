@@ -6,28 +6,28 @@ Switch between providers by modifying the LLM initialization below.
 """
 
 import os
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 
-# Get Google API key from environment
-google_api_key = os.getenv('GOOGLE_API_KEY')
-if not google_api_key:
+# Get Groq API key from environment
+groq_api_key = os.getenv('NEXT_PUBLIC_GROQ_API_KEY')
+if not groq_api_key:
     raise ValueError(
-        "GOOGLE_API_KEY not found in environment variables. "
+        "NEXT_PUBLIC_GROQ_API_KEY not found in environment variables. "
         "Please add it to your .env file or Cloud Run environment variables."
     )
 
-# Initialize Gemini 2.0 Flash
+# Initialize Groq LLaMA 3.3 70B
 # Benefits:
-# - 1M context window (vs 128k for Groq)
-# - Higher rate limits
-# - Free tier available
-# - Excellent reasoning capabilities
-LLM = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",  # Stable version with better quotas
+# - 128k context window
+# - Very fast inference
+# - 100k tokens/day free tier (should have reset by now)
+# - Excellent for SQL reasoning
+LLM = ChatGroq(
+    model="llama-3.3-70b-versatile",
     temperature=0.0,  # Deterministic responses
-    google_api_key=google_api_key,
-    max_output_tokens=8000,
-    convert_system_message_to_human=True  # Required for Gemini
+    groq_api_key=groq_api_key,
+    max_tokens=8000,
+    model_kwargs={'seed': 42}
 )
 
-print(f"✅ LLM configured: Gemini 2.0 Flash (1M context window)")
+print(f"✅ LLM configured: Groq LLaMA 3.3 70B (128k context window)")
