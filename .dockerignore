@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+backend/.venv/
+backend/venv/
+backend/env/
+*.egg-info/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+backend/temp_db_*.db
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Frontend (not needed for backend deploy)
+frontend/
+.next/
+node_modules/
+
+# Documentation
+README.md
+QUICKSTART.md
+*.md
+
+# Database migrations (copy separately if needed)
+database/
+
+# Claude
+.claude/
