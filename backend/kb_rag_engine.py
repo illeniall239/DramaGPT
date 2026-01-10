@@ -22,6 +22,7 @@ from sqlalchemy import create_engine, text
 from langchain_community.utilities import SQLDatabase
 from langchain_community.agent_toolkits import SQLDatabaseToolkit, create_sql_agent
 from langchain.agents import AgentType
+from sql_agent_tools import create_sql_exploration_tools
 
 # Note: Vector search imports removed (sentence_transformers, sklearn, qdrant_manager)
 # SQL agent mode only - numpy kept for type hints only
@@ -195,6 +196,91 @@ class KnowledgeBaseRAG:
         else:
             return 'complex'
 
+    def _analyze_table_columns(self, db_url: str, table_name: str) -> Dict[str, Any]:
+        """
+        Pre-analyze table columns for intelligent querying.
+        Returns metadata: distinct counts, cardinality, top values.
+
+        This enables the SQL agent to make intelligent column selection decisions
+        without hardcoded domain knowledge.
+
+        Args:
+            db_url: Database connection URL
+            table_name: Name of table to analyze
+
+        Returns:
+            Dict mapping column names to metadata:
+                - distinct_count: Number of unique values
+                - top_values: List of most common values
+                - cardinality: 'unique' | 'high' | 'medium' | 'low'
+        """
+        try:
+            engine = create_engine(db_url)
+            column_metadata = {}
+
+            with engine.connect() as conn:
+                # Get total rows
+                total_rows = conn.execute(
+                    text(f'SELECT COUNT(*) FROM "{table_name}"')
+                ).scalar()
+
+                if total_rows == 0:
+                    logger.warning(f"Table {table_name} has 0 rows")
+                    return {}
+
+                # Get columns
+                result = conn.execute(text(f'SELECT * FROM "{table_name}" LIMIT 1'))
+                columns = result.keys()
+
+                # Analyze each column
+                for col in columns:
+                    try:
+                        # Distinct count
+                        distinct_count = conn.execute(
+                            text(f'SELECT COUNT(DISTINCT "{col}") FROM "{table_name}"')
+                        ).scalar()
+
+                        # Top 3 values (most common)
+                        top_values_result = conn.execute(text(f'''
+                            SELECT "{col}", COUNT(*) as cnt
+                            FROM "{table_name}"
+                            WHERE "{col}" IS NOT NULL
+                            GROUP BY "{col}"
+                            ORDER BY cnt DESC
+                            LIMIT 3
+                        ''')).fetchall()
+
+                        top_values = [str(row[0]) for row in top_values_result]
+
+                        # Determine cardinality based on distinct count ratio
+                        ratio = distinct_count / total_rows if total_rows > 0 else 0
+                        if ratio > 0.9:
+                            cardinality = 'unique'
+                        elif distinct_count > 20:
+                            cardinality = 'high'
+                        elif distinct_count > 5:
+                            cardinality = 'medium'
+                        else:
+                            cardinality = 'low'
+
+                        column_metadata[col] = {
+                            'distinct_count': distinct_count,
+                            'top_values': top_values,
+                            'cardinality': cardinality
+                        }
+
+                    except Exception as e:
+                        logger.warning(f"Failed to analyze column {col}: {e}")
+                        # Continue with other columns
+                        continue
+
+            logger.info(f"✅ Analyzed {len(column_metadata)} columns in {table_name}")
+            return column_metadata
+
+        except Exception as e:
+            logger.error(f"❌ Failed to analyze table columns: {e}")
+            return {}
+
     def query_kb(
         self,
         kb_id: str,
@@ -275,15 +361,35 @@ class KnowledgeBaseRAG:
             db = SQLDatabase(engine, include_tables=all_table_names)  # Pass ALL tables
             toolkit = SQLDatabaseToolkit(db=db, llm=self.llm)
 
-            # Step 4: Build system message with info about ALL tables
+            # Step 4: Build enriched system message with column analysis
             table_descriptions = []
             for table_info in tables_info:
-                cols = ', '.join(table_info['columns'])
-                table_descriptions.append(
-                    f"- **{table_info['table_name']}** (from {table_info['filename']})\n"
-                    f"  Columns: {cols}\n"
-                    f"  Rows: {table_info['row_count']}"
-                )
+                table_name = table_info['table_name']
+
+                # Pre-analyze columns for intelligent querying
+                logger.info(f"Analyzing columns for table: {table_name}")
+                col_metadata = self._analyze_table_columns(db_url, table_name)
+
+                # Build enriched description
+                desc = f"**{table_name}** (from {table_info['filename']})\n"
+                desc += f"  Rows: {table_info['row_count']}\n"
+                desc += "  Columns:\n"
+
+                # Add detailed column info with distinct counts and samples
+                for col, meta in col_metadata.items():
+                    distinct = meta.get('distinct_count', 0)
+                    cardinality = meta.get('cardinality', 'unknown')
+                    top_values = meta.get('top_values', [])
+
+                    # Format sample values
+                    sample_str = ', '.join([f'"{v}"' for v in top_values[:3]])
+
+                    desc += f'    - "{col}": {distinct} distinct ({cardinality})'
+                    if sample_str:
+                        desc += f' - e.g., {sample_str}'
+                    desc += '\n'
+
+                table_descriptions.append(desc)
 
             tables_desc = '\n'.join(table_descriptions)
 
@@ -316,12 +422,24 @@ class KnowledgeBaseRAG:
 9. **Resolve pronouns and references using conversation context above**
 10. **FORMAT NUMBERS AS WHOLE INTEGERS - do not include decimal places in your responses**
     Example: Say "GRPS is 3159" NOT "GRPS is 3159.682"
-11. **IMPORTANT - Theme vs Genre distinction:**
-    - When users ask about "crime", "thriller", "romance", etc., they mean the "Theme" column, NOT "Genre"
-    - The "Genre" column typically contains "Serial" for all dramas
-    - The "Theme" column contains values like: "Feudal/Politics/Crime/Media", "Mystery/Supernatural/Thriller", "Love/Love Triangle/Romance", etc.
-    - Use LIKE operator for theme searches: WHERE "Theme" LIKE '%Crime%' OR "Theme" LIKE '%Thriller%'
-    - Example: "best crime thriller" → search Theme column for Crime/Thriller keywords
+11. **UNIVERSAL Column Selection Strategy:**
+    - The schema above shows DISTINCT COUNTS and CARDINALITY for each column
+    - High distinct count (e.g., 42) = likely contains varied categorical data (good for filtering)
+    - Low distinct count (e.g., 1) = probably not useful for filtering (all rows have same value)
+    - Use the SAMPLE VALUES to understand what each column contains
+    - If multiple columns could match the query, use sql_db_distinct_values tool to inspect actual values
+
+    **Example Decision Process:**
+    - User asks: "top crime dramas"
+    - Schema shows: "Genre" (1 distinct, "Serial"), "Theme" (42 distinct, e.g., "Crime/Thriller", "Romance")
+    - Decision: "Genre" has only 1 value → not useful. "Theme" has 42 values including crime-related → use Theme
+    - Query: WHERE "Theme" LIKE '%Crime%'
+
+    **When Ambiguous:**
+    - If unsure which column to use, call sql_db_distinct_values(table_name, column_name, limit=10)
+    - Inspect the actual values returned
+    - Choose the column that best matches the user's intent
+    - This works for ANY dataset - no hardcoded domain knowledge needed
 
 **Pronoun Resolution Examples:**
 - Previous: "Huma Nafees has highest GRPs"
@@ -389,10 +507,15 @@ class KnowledgeBaseRAG:
 
                     logger.info(f"Attempt {attempt + 1}/{max_retries} with config: max_iterations={config['max_iterations']}, max_execution_time={config['max_execution_time']}s")
 
-                    # Create SQL agent with current config
+                    # Create exploration tools for intelligent column selection
+                    exploration_tools = create_sql_exploration_tools(db=db)
+                    logger.info(f"Created {len(exploration_tools)} exploration tools for column analysis")
+
+                    # Create SQL agent with current config and exploration tools
                     sql_agent = create_sql_agent(
                         llm=self.llm,
                         toolkit=toolkit,
+                        extra_tools=exploration_tools,  # Add custom exploration tools
                         agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
                         verbose=True,
                         handle_parsing_errors=handle_parsing_error,
