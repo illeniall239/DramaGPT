@@ -23,7 +23,7 @@ if not google_api_key:
 # - Free tier available
 # - Excellent reasoning capabilities
 LLM = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash-exp",  # Latest Gemini 2.0 Flash experimental
+    model="gemini-1.5-flash",  # Stable version with better quotas
     temperature=0.0,  # Deterministic responses
     google_api_key=google_api_key,
     max_output_tokens=8000,
