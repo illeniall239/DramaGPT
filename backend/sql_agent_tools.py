@@ -9,7 +9,7 @@ Date: 2026-01-10
 """
 
 import logging
-from typing import Any, Type
+from typing import Any, Type, Optional
 from langchain_core.tools import BaseTool
 from langchain_community.utilities.sql_database import SQLDatabase
 from pydantic import BaseModel, Field
@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 
 class DistinctValuesInput(BaseModel):
     """Input schema for sql_db_distinct_values tool."""
-    table_name: str = Field(description="Name of the table to query")
-    column_name: str = Field(description="Name of the column to analyze")
-    limit: int = Field(default=10, description="Number of top distinct values to return")
+    table_name: str = Field(..., description="Name of the table to query")
+    column_name: str = Field(..., description="Name of the column to analyze")
+    limit: Optional[int] = Field(10, description="Number of top distinct values to return")
 
 
 class SQLDistinctValuesTool(BaseTool):
@@ -39,34 +39,15 @@ class SQLDistinctValuesTool(BaseTool):
     Example usage:
     - User asks: "show me crime dramas"
     - Agent sees: Genre (1 distinct), Theme (42 distinct)
-    - Agent calls: sql_db_distinct_values(table="kb_data_table", column="Theme", limit=10)
+    - Agent calls: sql_db_distinct_values(table_name="kb_data_table", column_name="Theme", limit=10)
     - Tool returns: Theme values like "Crime/Thriller", "Romance", "Drama", etc.
     - Agent decides: Use Theme column for filtering
     """
 
     name: str = "sql_db_distinct_values"
-    description: str = """
-Get distinct values and their counts for a specific column in a table.
-
-Use this when:
-- Column names are ambiguous (e.g., Genre vs Theme, Title vs Name, Category vs Type)
-- You need to see actual values before deciding which column to query
-- The schema shows multiple columns with similar purposes
-- You're unsure if a column contains the data you're looking for
-
-Input:
-- table_name: Name of the table to query
-- column_name: Name of the column to analyze
-- limit: Number of top distinct values to return (default: 10)
-
-Returns:
-- Total distinct count
-- Top N values with occurrence counts
-- Helps you decide if this column contains the right data for the query
-
-Example:
-sql_db_distinct_values(table_name="kb_data_table", column_name="Theme", limit=10)
-"""
+    description: str = """Get distinct values and counts for a specific column.
+Input should be table_name and column_name (required), and optionally limit (default 10).
+Use when column names are ambiguous or you need to see actual values before querying."""
     args_schema: Type[BaseModel] = DistinctValuesInput
     db: SQLDatabase
 
