@@ -6,28 +6,28 @@ Switch between providers by modifying the LLM initialization below.
 """
 
 import os
-from langchain_groq import ChatGroq
+from langchain_google_genai import ChatGoogleGenerativeAI
 
-# Get Groq API key from environment
-groq_api_key = os.getenv('NEXT_PUBLIC_GROQ_API_KEY')
-if not groq_api_key:
+# Get Google API key from environment
+google_api_key = os.getenv('GOOGLE_API_KEY')
+if not google_api_key:
     raise ValueError(
-        "NEXT_PUBLIC_GROQ_API_KEY not found in environment variables. "
+        "GOOGLE_API_KEY not found in environment variables. "
         "Please add it to your .env file or Cloud Run environment variables."
     )
 
-# Initialize Groq LLaMA 3.3 70B
+# Initialize Gemini 1.5 Flash with billing-enabled API key
 # Benefits:
-# - 128k context window
-# - Very fast inference
-# - 100k tokens/day free tier (should have reset by now)
-# - Excellent for SQL reasoning
-LLM = ChatGroq(
-    model="llama-3.3-70b-versatile",
+# - 1M context window (vs 128k for Groq)
+# - 2M tokens/month FREE tier, then pay-as-you-go
+# - Much higher rate limits than AI Studio free tier
+# - Excellent reasoning capabilities
+LLM = ChatGoogleGenerativeAI(
+    model="gemini-1.5-flash",
     temperature=0.0,  # Deterministic responses
-    groq_api_key=groq_api_key,
-    max_tokens=8000,
-    model_kwargs={'seed': 42}
+    google_api_key=google_api_key,
+    max_output_tokens=8000,
+    convert_system_message_to_human=True  # Required for Gemini
 )
 
-print(f"✅ LLM configured: Groq LLaMA 3.3 70B (128k context window)")
+print(f"✅ LLM configured: Gemini 1.5 Flash with billing-enabled quotas")
