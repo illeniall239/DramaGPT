@@ -316,6 +316,12 @@ class KnowledgeBaseRAG:
 9. **Resolve pronouns and references using conversation context above**
 10. **FORMAT NUMBERS AS WHOLE INTEGERS - do not include decimal places in your responses**
     Example: Say "GRPS is 3159" NOT "GRPS is 3159.682"
+11. **IMPORTANT - Theme vs Genre distinction:**
+    - When users ask about "crime", "thriller", "romance", etc., they mean the "Theme" column, NOT "Genre"
+    - The "Genre" column typically contains "Serial" for all dramas
+    - The "Theme" column contains values like: "Feudal/Politics/Crime/Media", "Mystery/Supernatural/Thriller", "Love/Love Triangle/Romance", etc.
+    - Use LIKE operator for theme searches: WHERE "Theme" LIKE '%Crime%' OR "Theme" LIKE '%Thriller%'
+    - Example: "best crime thriller" → search Theme column for Crime/Thriller keywords
 
 **Pronoun Resolution Examples:**
 - Previous: "Huma Nafees has highest GRPs"
