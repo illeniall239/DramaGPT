@@ -205,3 +205,4 @@ dateparser>=1.1.0
 pdfplumber==0.11.4          # PDF text and table extraction
 python-docx==1.1.2          # DOCX reading
 pgvector==0.3.6             # PostgreSQL vector extension client
+psycopg2-binary==2.9.10     # PostgreSQL adapter for Python
