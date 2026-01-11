@@ -23,7 +23,8 @@ import {
     updateKnowledgeBase,
     loadKBDocuments,
     deleteKBDocument,
-    deleteKBChat
+    deleteKBChat,
+    updateChatTitle
 } from '@/utils/api';
 import { KnowledgeBase, KBChat, KBDocument } from '@/types';
 
@@ -52,6 +53,13 @@ export default function KnowledgeBaseSidebar({
     const [documentsLoading, setDocumentsLoading] = useState(false);
     const [documentsError, setDocumentsError] = useState<string | null>(null);
 
+    // Inline editing state for KB and Chat renaming
+    const [editingKBId, setEditingKBId] = useState<string | null>(null);
+    const [editingKBName, setEditingKBName] = useState('');
+    const [editingChatId, setEditingChatId] = useState<string | null>(null);
+    const [editingChatTitle, setEditingChatTitle] = useState('');
+    const [isSavingEdit, setIsSavingEdit] = useState(false);
+
     // Create KB modal state
     const [showCreateModal, setShowCreateModal] = useState(false);
     const [newKBName, setNewKBName] = useState('');
@@ -78,6 +86,8 @@ export default function KnowledgeBaseSidebar({
         (async () => {
             const { supabase } = await import('@/utils/supabase');
 
+            let debounceTimer: NodeJS.Timeout;
+
             subscription = supabase
                 .channel('kb-chats-updates')
                 .on(
@@ -90,8 +100,12 @@ export default function KnowledgeBaseSidebar({
                     },
                     (payload) => {
                         console.log('📡 Chat event (real-time):', payload.eventType, payload);
-                        // Refresh chats list to show changes
-                        loadChatsAndDocuments(selectedKB.id);
+
+                        // Debounce the refresh to prevent spamming queries
+                        clearTimeout(debounceTimer);
+                        debounceTimer = setTimeout(() => {
+                            loadChatsAndDocuments(selectedKB.id);
+                        }, 500);
                     }
                 )
                 .subscribe((status) => {
@@ -279,6 +293,66 @@ export default function KnowledgeBaseSidebar({
         setChatToDelete(null);
     }
 
+    // KB inline edit handlers
+    function handleStartEditKB(kb: KnowledgeBase, event: React.MouseEvent) {
+        event.stopPropagation();
+        setEditingKBId(kb.id);
+        setEditingKBName(kb.name);
+    }
+
+    async function handleSaveKBEdit() {
+        if (!editingKBId || !editingKBName.trim()) return;
+        try {
+            setIsSavingEdit(true);
+            await updateKnowledgeBase(editingKBId, { name: editingKBName.trim() });
+            await loadKBs();
+            setEditingKBId(null);
+            setEditingKBName('');
+        } catch (error) {
+            console.error('Failed to rename knowledge base:', error);
+            alert('Failed to rename knowledge base. Please try again.');
+        } finally {
+            setIsSavingEdit(false);
+        }
+    }
+
+    function handleCancelKBEdit() {
+        if (isSavingEdit) return;
+        setEditingKBId(null);
+        setEditingKBName('');
+    }
+
+    // Chat inline edit handlers
+    function handleStartEditChat(chat: KBChat, event: React.MouseEvent) {
+        event.stopPropagation();
+        setEditingChatId(chat.id);
+        setEditingChatTitle(chat.title);
+    }
+
+    async function handleSaveChatEdit() {
+        if (!editingChatId || !editingChatTitle.trim()) return;
+        try {
+            setIsSavingEdit(true);
+            await updateChatTitle(editingChatId, editingChatTitle.trim());
+            if (selectedKB) {
+                await loadChatsAndDocuments(selectedKB.id);
+            }
+            setEditingChatId(null);
+            setEditingChatTitle('');
+        } catch (error) {
+            console.error('Failed to rename chat:', error);
+            alert('Failed to rename chat. Please try again.');
+        } finally {
+            setIsSavingEdit(false);
+        }
+    }
+
+    function handleCancelChatEdit() {
+        if (isSavingEdit) return;
+        setEditingChatId(null);
+        setEditingChatTitle('');
+    }
+
     // Render loading state
     if (isLoading) {
         return (
@@ -328,30 +402,81 @@ export default function KnowledgeBaseSidebar({
                         knowledgeBases.map((kb) => (
                             <div
                                 key={kb.id}
-                                onClick={() => handleSelectKB(kb)}
-                                className="p-3 bg-white rounded-lg border border-border hover:bg-muted/30 cursor-pointer transition-all group"
+                                onClick={() => editingKBId !== kb.id && handleSelectKB(kb)}
+                                className={`p-3 bg-white rounded-lg border border-border hover:bg-muted/30 cursor-pointer transition-all group ${editingKBId === kb.id ? 'ring-2 ring-primary' : ''}`}
                             >
                                 <div className="flex items-start justify-between gap-2">
                                     <div className="flex-1 min-w-0">
-                                        <h3 className="font-medium text-foreground text-sm truncate">
-                                            {kb.name}
-                                        </h3>
-                                        {kb.description && (
+                                        {editingKBId === kb.id ? (
+                                            <div className="flex items-center gap-2">
+                                                <input
+                                                    type="text"
+                                                    value={editingKBName}
+                                                    onChange={(e) => setEditingKBName(e.target.value)}
+                                                    onClick={(e) => e.stopPropagation()}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === 'Enter') handleSaveKBEdit();
+                                                        if (e.key === 'Escape') handleCancelKBEdit();
+                                                    }}
+                                                    className="flex-1 px-2 py-1 text-sm border border-border rounded bg-white focus:outline-none focus:ring-2 focus:ring-primary/50"
+                                                    autoFocus
+                                                    disabled={isSavingEdit}
+                                                />
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); handleSaveKBEdit(); }}
+                                                    disabled={!editingKBName.trim() || isSavingEdit}
+                                                    className="p-1 hover:bg-green-100 rounded transition-all disabled:opacity-50"
+                                                    title="Save"
+                                                >
+                                                    {isSavingEdit ? (
+                                                        <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                                                    ) : (
+                                                        <Check className="w-4 h-4 text-green-600" />
+                                                    )}
+                                                </button>
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); handleCancelKBEdit(); }}
+                                                    disabled={isSavingEdit}
+                                                    className="p-1 hover:bg-red-100 rounded transition-all disabled:opacity-50"
+                                                    title="Cancel"
+                                                >
+                                                    <X className="w-4 h-4 text-red-600" />
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            <h3 className="font-medium text-foreground text-sm truncate">
+                                                {kb.name}
+                                            </h3>
+                                        )}
+                                        {kb.description && editingKBId !== kb.id && (
                                             <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
                                                 {kb.description}
                                             </p>
                                         )}
-                                        <div className="mt-2 text-xs text-muted-foreground">
-                                            {new Date(kb.created_at).toLocaleDateString()}
-                                        </div>
+                                        {editingKBId !== kb.id && (
+                                            <div className="mt-2 text-xs text-muted-foreground">
+                                                {new Date(kb.created_at).toLocaleDateString()}
+                                            </div>
+                                        )}
                                     </div>
-                                    <button
-                                        onClick={(e) => handleDeleteKB(kb.id, e)}
-                                        className="opacity-0 group-hover:opacity-100 p-1 hover:bg-destructive/10 rounded transition-all flex-shrink-0"
-                                        title="Delete KB"
-                                    >
-                                        <Trash2 className="w-4 h-4 text-destructive" />
-                                    </button>
+                                    {editingKBId !== kb.id && (
+                                        <div className="flex items-center gap-1 flex-shrink-0">
+                                            <button
+                                                onClick={(e) => handleStartEditKB(kb, e)}
+                                                className="opacity-0 group-hover:opacity-100 p-1 hover:bg-muted rounded transition-all"
+                                                title="Rename KB"
+                                            >
+                                                <Edit3 className="w-4 h-4 text-muted-foreground" />
+                                            </button>
+                                            <button
+                                                onClick={(e) => handleDeleteKB(kb.id, e)}
+                                                className="opacity-0 group-hover:opacity-100 p-1 hover:bg-destructive/10 rounded transition-all"
+                                                title="Delete KB"
+                                            >
+                                                <Trash2 className="w-4 h-4 text-destructive" />
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         ))
@@ -361,8 +486,8 @@ export default function KnowledgeBaseSidebar({
                 {/* Create KB Modal */}
                 {showCreateModal && (
                     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-                        <div className="bg-white rounded-xl max-w-md w-full p-6 border border-border shadow-xl">
-                            <h3 className="text-xl font-display font-semibold text-foreground mb-6">
+                        <div className="bg-white rounded-xl max-w-md w-full p-5 sm:p-6 border border-border shadow-xl">
+                            <h3 className="text-lg sm:text-xl font-display font-semibold text-foreground mb-4 sm:mb-6">
                                 Create Knowledge Base
                             </h3>
 
@@ -426,7 +551,7 @@ export default function KnowledgeBaseSidebar({
 
     // Level 2: Chat List for Selected KB
     return (
-            <div className="h-full flex flex-col bg-sidebar">
+        <div className="h-full flex flex-col bg-sidebar">
             {/* Header with Back Button */}
             <div className="p-4 border-b border-border bg-sidebar">
                 <button
@@ -445,7 +570,7 @@ export default function KnowledgeBaseSidebar({
                 </div>
 
                 {/* Action Buttons */}
-                <div className="flex gap-2">
+                <div className="flex flex-col sm:flex-row gap-2">
                     <button
                         onClick={handleCreateChat}
                         disabled={isCreatingChat}
@@ -540,29 +665,79 @@ export default function KnowledgeBaseSidebar({
                     kbChats.map((chat) => (
                         <div
                             key={chat.id}
-                            onClick={() => handleSelectChat(chat)}
-                            className={`p-3 rounded-lg cursor-pointer transition-all group ${
-                                activeChat?.id === chat.id
+                            onClick={() => editingChatId !== chat.id && handleSelectChat(chat)}
+                            className={`p-3 rounded-lg cursor-pointer transition-all group ${editingChatId === chat.id
+                                ? 'bg-muted/70 ring-2 ring-primary'
+                                : activeChat?.id === chat.id
                                     ? 'bg-muted/70 border border-primary'
                                     : 'bg-white border border-transparent hover:bg-muted/30'
-                            }`}
+                                }`}
                         >
                             <div className="flex items-center gap-2">
-                                <MessageSquare className="w-4 h-4 text-muted-foreground" />
-                                <h3 className="font-medium text-foreground text-sm truncate flex-1">
-                                    {chat.title}
-                                </h3>
-                                <button
-                                    onClick={(e) => handleDeleteChatClick(chat, e)}
-                                    className="opacity-0 group-hover:opacity-100 p-1 hover:bg-destructive/10 rounded transition-all"
-                                    title="Delete chat"
-                                >
-                                    <Trash2 className="w-3 h-3 text-destructive" />
-                                </button>
+                                <MessageSquare className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                                {editingChatId === chat.id ? (
+                                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                                        <input
+                                            type="text"
+                                            value={editingChatTitle}
+                                            onChange={(e) => setEditingChatTitle(e.target.value)}
+                                            onClick={(e) => e.stopPropagation()}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') handleSaveChatEdit();
+                                                if (e.key === 'Escape') handleCancelChatEdit();
+                                            }}
+                                            className="flex-1 px-2 py-1 text-sm border border-border rounded bg-white focus:outline-none focus:ring-2 focus:ring-primary/50"
+                                            autoFocus
+                                            disabled={isSavingEdit}
+                                        />
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); handleSaveChatEdit(); }}
+                                            disabled={!editingChatTitle.trim() || isSavingEdit}
+                                            className="p-1 hover:bg-green-100 rounded transition-all disabled:opacity-50"
+                                            title="Save"
+                                        >
+                                            {isSavingEdit ? (
+                                                <Loader2 className="w-3 h-3 animate-spin text-primary" />
+                                            ) : (
+                                                <Check className="w-3 h-3 text-green-600" />
+                                            )}
+                                        </button>
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); handleCancelChatEdit(); }}
+                                            disabled={isSavingEdit}
+                                            className="p-1 hover:bg-red-100 rounded transition-all disabled:opacity-50"
+                                            title="Cancel"
+                                        >
+                                            <X className="w-3 h-3 text-red-600" />
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <h3 className="font-medium text-foreground text-sm truncate flex-1">
+                                            {chat.title}
+                                        </h3>
+                                        <button
+                                            onClick={(e) => handleStartEditChat(chat, e)}
+                                            className="opacity-0 group-hover:opacity-100 p-1 hover:bg-muted rounded transition-all"
+                                            title="Rename chat"
+                                        >
+                                            <Edit3 className="w-3 h-3 text-muted-foreground" />
+                                        </button>
+                                        <button
+                                            onClick={(e) => handleDeleteChatClick(chat, e)}
+                                            className="opacity-0 group-hover:opacity-100 p-1 hover:bg-destructive/10 rounded transition-all"
+                                            title="Delete chat"
+                                        >
+                                            <Trash2 className="w-3 h-3 text-destructive" />
+                                        </button>
+                                    </>
+                                )}
                             </div>
-                            <p className="text-xs text-muted-foreground mt-1">
-                                {new Date(chat.updated_at).toLocaleDateString()}
-                            </p>
+                            {editingChatId !== chat.id && (
+                                <p className="text-xs text-muted-foreground mt-1">
+                                    {new Date(chat.updated_at).toLocaleDateString()}
+                                </p>
+                            )}
                         </div>
                     ))
                 )}

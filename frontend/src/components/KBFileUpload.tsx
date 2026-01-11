@@ -206,16 +206,16 @@ export default function KBFileUpload({
     ).length;
 
     return (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-xl max-w-2xl w-full max-h-[85vh] flex flex-col border border-border shadow-2xl">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
+            <div className="bg-white rounded-xl max-w-2xl w-full max-h-[90vh] sm:max-h-[85vh] flex flex-col border border-border shadow-2xl">
                 {/* Header */}
-                <div className="px-6 py-5 border-b border-border flex items-center justify-between">
-                    <div>
-                        <h2 className="text-xl font-display font-semibold text-foreground">
-                            Upload Files to Knowledge Base
+                <div className="px-4 sm:px-6 py-4 sm:py-5 border-b border-border flex items-center justify-between">
+                    <div className="min-w-0 pr-4">
+                        <h2 className="text-lg sm:text-xl font-display font-semibold text-foreground truncate">
+                            Upload Files
                         </h2>
-                        <p className="text-sm text-muted-foreground mt-1">
-                            Supported: PDF, DOCX, TXT, CSV, Excel
+                        <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 truncate">
+                            PDF, DOCX, TXT, CSV, Excel
                         </p>
                     </div>
                     <button
@@ -234,17 +234,16 @@ export default function KBFileUpload({
                             onDragOver={handleDragOver}
                             onDragLeave={handleDragLeave}
                             onClick={() => fileInputRef.current?.click()}
-                            className={`border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all bg-white ${
-                                isDragging
+                            className={`border-2 border-dashed rounded-xl p-6 sm:p-12 text-center cursor-pointer transition-all bg-white ${isDragging
                                     ? 'border-primary bg-primary/5'
                                     : 'border-border hover:border-primary/50 hover:bg-muted/30'
-                            }`}
+                                }`}
                         >
-                            <Upload className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                            <p className="text-lg font-semibold text-foreground mb-2">
-                                Drop files here or click to browse
+                            <Upload className="w-8 h-8 sm:w-12 sm:h-12 mx-auto text-muted-foreground mb-3 sm:mb-4" />
+                            <p className="text-base sm:text-lg font-semibold text-foreground mb-1 sm:mb-2">
+                                Tap to browse files
                             </p>
-                            <p className="text-sm text-muted-foreground">
+                            <p className="text-xs sm:text-sm text-muted-foreground">
                                 Upload PDFs, Word documents, text files, or spreadsheets
                             </p>
                             <input
@@ -267,7 +266,7 @@ export default function KBFileUpload({
                                 return (
                                     <div
                                         key={index}
-                                        className="border border-border rounded-lg p-4 bg-white shadow-sm"
+                                        className="border border-border rounded-lg p-3 sm:p-4 bg-white shadow-sm"
                                     >
                                         <div className="flex items-start gap-3">
                                             <div className="flex-shrink-0">
@@ -325,15 +324,14 @@ export default function KBFileUpload({
                                                         </div>
                                                         <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
                                                             <div
-                                                                className={`h-full rounded-full transition-all duration-300 ${
-                                                                    progress.status === 'completed'
+                                                                className={`h-full rounded-full transition-all duration-300 ${progress.status === 'completed'
                                                                         ? 'bg-green-600'
                                                                         : progress.status === 'processing'
-                                                                        ? 'bg-primary'
-                                                                        : progress.status === 'failed'
-                                                                        ? 'bg-destructive'
-                                                                        : 'bg-primary'
-                                                                }`}
+                                                                            ? 'bg-primary'
+                                                                            : progress.status === 'failed'
+                                                                                ? 'bg-destructive'
+                                                                                : 'bg-primary'
+                                                                    }`}
                                                                 style={{ width: `${progress.progress}%` }}
                                                             />
                                                         </div>
@@ -369,7 +367,7 @@ export default function KBFileUpload({
                 </div>
 
                 {/* Footer */}
-                <div className="px-6 py-5 border-t border-border bg-muted/20">
+                <div className="px-4 sm:px-6 py-4 sm:py-5 border-t border-border bg-muted/20">
                     {isUploading && (
                         <div className="mb-4 text-center text-sm text-muted-foreground">
                             Uploading {uploadedCount} of {selectedFiles.length} files...

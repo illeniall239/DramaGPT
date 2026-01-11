@@ -1,0 +1,116 @@
+{
+  "artifacts": {
+    "images": [
+      "us-central1-docker.pkg.dev/project-99cef951-6f56-4375-b19/cloud-run-source-deploy/project-99cef951-6f56-4375-b19:latest"
+    ]
+  },
+  "createTime": "2026-01-10T11:41:29.943416829Z",
+  "finishTime": "2026-01-10T11:50:18.622865Z",
+  "id": "798a561a-c5fe-49a2-bfd6-54ddf41f0ed5",
+  "images": [
+    "us-central1-docker.pkg.dev/project-99cef951-6f56-4375-b19/cloud-run-source-deploy/project-99cef951-6f56-4375-b19:latest"
+  ],
+  "logUrl": "https://console.cloud.google.com/cloud-build/builds;region=us-central1/798a561a-c5fe-49a2-bfd6-54ddf41f0ed5?project=563185996554",
+  "name": "projects/563185996554/locations/us-central1/builds/798a561a-c5fe-49a2-bfd6-54ddf41f0ed5",
+  "options": {
+    "logStreamingOption": "STREAM_OFF",
+    "logging": "CLOUD_LOGGING_ONLY",
+    "pool": {}
+  },
+  "projectId": "project-99cef951-6f56-4375-b19",
+  "queueTtl": "360s",
+  "results": {
+    "buildStepImages": [
+      "sha256:16129cff38556be1e42a3320c97876b4a102c91772185231054b0d42ec6fe447"
+    ],
+    "buildStepOutputs": [
+      ""
+    ]
+  },
+  "serviceAccount": "projects/project-99cef951-6f56-4375-b19/serviceAccounts/563185996554-compute@developer.gserviceaccount.com",
+  "source": {
+    "storageSource": {
+      "bucket": "run-sources-project-99cef951-6f56-4375-b19-us-central1",
+      "generation": "1768045288126897",
+      "object": "services/project-99cef951-6f56-4375-b19/1768045284.176947-864661fd5e8740fca1326f51420bfdeb.zip"
+    }
+  },
+  "sourceProvenance": {
+    "fileHashes": {
+      "gs://run-sources-project-99cef951-6f56-4375-b19-us-central1/services/project-99cef951-6f56-4375-b19/1768045284.176947-864661fd5e8740fca1326f51420bfdeb.zip#1768045288126897": {
+        "fileHash": [
+          {
+            "type": "MD5",
+            "value": "t1Pb7ZGQvKGqSHhcR5KQfA=="
+          }
+        ]
+      }
+    },
+    "resolvedStorageSource": {
+      "bucket": "run-sources-project-99cef951-6f56-4375-b19-us-central1",
+      "generation": "1768045288126897",
+      "object": "services/project-99cef951-6f56-4375-b19/1768045284.176947-864661fd5e8740fca1326f51420bfdeb.zip"
+    }
+  },
+  "startTime": "2026-01-10T11:41:30.568034510Z",
+  "status": "FAILURE",
+  "steps": [
+    {
+      "args": [
+        "build",
+        "--network",
+        "cloudbuild",
+        "--no-cache",
+        "-t",
+        "us-central1-docker.pkg.dev/project-99cef951-6f56-4375-b19/cloud-run-source-deploy/project-99cef951-6f56-4375-b19:latest",
+        ".",
+        "--label",
+        "google.build_id=798a561a-c5fe-49a2-bfd6-54ddf41f0ed5",
+        "--label",
+        "google.source=gs://run-sources-project-99cef951-6f56-4375-b19-us-central1/services/project-99cef951-6f56-4375-b19/1768045284.176947-864661fd5e8740fca1326f51420bfdeb.zip#1768045288126897"
+      ],
+      "id": "run-docker-build",
+      "name": "gcr.io/cloud-builders/docker",
+      "pullTiming": {
+        "endTime": "2026-01-10T11:41:35.523335748Z",
+        "startTime": "2026-01-10T11:41:35.517389670Z"
+      },
+      "status": "SUCCESS",
+      "timing": {
+        "endTime": "2026-01-10T11:49:41.642960055Z",
+        "startTime": "2026-01-10T11:41:35.517389670Z"
+      }
+    }
+  ],
+  "tags": [
+    "p-run",
+    "r-docker",
+    "bt-DOCKER",
+    "service_project-99cef951-6f56-4375-b19"
+  ],
+  "timeout": "1800s",
+  "timing": {
+    "BUILD": {
+      "endTime": "2026-01-10T11:49:41.812482995Z",
+      "startTime": "2026-01-10T11:41:34.863959485Z"
+    },
+    "FETCHSOURCE": {
+      "endTime": "2026-01-10T11:41:34.862921623Z",
+      "startTime": "2026-01-10T11:41:31.752302675Z"
+    },
+    "PUSH": {
+      "endTime": "2026-01-10T11:50:07.854519245Z",
+      "startTime": "2026-01-10T11:49:41.812598699Z"
+    },
+    "STORAGE_SOURCE": {
+      "endTime": "2026-01-10T11:41:34.862921623Z",
+      "startTime": "2026-01-10T11:41:31.752302675Z"
+    }
+  },
+  "warnings": [
+    {
+      "priority": "INFO",
+      "text": "The service account running this build projects/project-99cef951-6f56-4375-b19/serviceAccounts/563185996554-compute@developer.gserviceaccount.com does not have permission to write logs to Cloud Logging. To fix this, grant the Logs Writer (roles/logging.logWriter) role to the service account."
+    }
+  ]
+}

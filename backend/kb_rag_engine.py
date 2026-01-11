@@ -16,6 +16,7 @@ import os
 import re
 import time
 from datetime import datetime
+from functools import lru_cache
 from typing import Dict, List, Optional, Any
 import numpy as np  # Keep for type hints in old RAG methods
 from sqlalchemy import create_engine, text
@@ -137,15 +138,15 @@ class KnowledgeBaseRAG:
                 'user_message': 'Reformatting query, please wait...'
             }
 
-        # Rate limit errors
+        # Rate limit errors (don't retry to save quota)
         if any(pattern in error_str for pattern in [
-            'rate limit', '429', 'too many requests'
+            'rate limit', '429', 'too many requests', 'quota'
         ]):
             return {
                 'error_type': 'rate_limit',
-                'should_retry': True,
-                'wait_seconds': 10,
-                'user_message': 'API rate limit reached, waiting before retry...'
+                'should_retry': False,
+                'wait_seconds': 30,
+                'user_message': 'API rate limit or quota reached. Please wait a moment or check your Gemini API plan.'
             }
 
         # Database errors (don't retry)
@@ -196,6 +197,7 @@ class KnowledgeBaseRAG:
         else:
             return 'complex'
 
+    @lru_cache(maxsize=100)
     def _analyze_table_columns(self, db_url: str, table_name: str) -> Dict[str, Any]:
         """
         Pre-analyze table columns for intelligent querying.
@@ -393,8 +395,12 @@ class KnowledgeBaseRAG:
 
             tables_desc = '\n'.join(table_descriptions)
 
+            # Step 4a: Rewrite vague follow-up queries using conversation context
+            # This expands "tell me more about it" → "tell me more about Meri Zaat Zarra-e-Benishan"
+            rewritten_query = self._rewrite_query_with_context(query, conversation_history)
+            
             # PART B: Preprocess query to add date hints
-            enhanced_query = self._enhance_time_based_query(query)
+            enhanced_query = self._enhance_time_based_query(rewritten_query)
             logger.info(f"Enhanced query: {enhanced_query}")
 
             # Format conversation context for pronoun resolution
@@ -867,6 +873,90 @@ Provide ONLY the summary text."""
 
         context += "\n**IMPORTANT:** Use this context to resolve pronouns (she/he/they/their/it) and references (the writer/that channel/those dramas) in the current query.\n"
         return context
+
+    def _rewrite_query_with_context(self, query: str, conversation_history: List[Dict]) -> str:
+        """
+        Rewrite vague follow-up queries to explicit queries using conversation context.
+        
+        This solves the problem of queries like "tell me more about it" where "it" refers
+        to a subject mentioned in previous messages. The LLM expands these to full queries.
+        
+        Args:
+            query: User's current query (may be vague with pronouns)
+            conversation_history: List of previous messages for context
+            
+        Returns:
+            Rewritten query with pronouns resolved, or original if no rewriting needed
+        """
+        # Skip rewriting if no conversation history
+        if not conversation_history or len(conversation_history) == 0:
+            return query
+        
+        # Quick check: does query contain vague references that need resolution?
+        vague_patterns = [
+            'it', 'this', 'that', 'them', 'they', 'their', 'these', 'those',
+            'more about', 'tell me more', 'what about', 'how about',
+            'the same', 'similar', 'like that', 'the one', 'which one'
+        ]
+        
+        query_lower = query.lower()
+        needs_rewriting = any(pattern in query_lower for pattern in vague_patterns)
+        
+        # Also check for very short queries (likely follow-ups)
+        if len(query.split()) <= 5:
+            needs_rewriting = True
+        
+        if not needs_rewriting:
+            return query
+        
+        logger.info(f"🔄 Query may need rewriting: '{query}'")
+        
+        try:
+            # Format recent conversation for context
+            context_messages = []
+            for msg in conversation_history[-6:]:  # Last 3 exchanges
+                role = msg.get('role', 'unknown')
+                content = msg.get('content', '')
+                # Use more content for rewriting (300 chars vs 150)
+                preview = content[:300] + '...' if len(content) > 300 else content
+                context_messages.append(f"{role.upper()}: {preview}")
+            
+            conversation_text = "\n".join(context_messages)
+            
+            rewrite_prompt = f"""You are a query rewriter. Your task is to expand vague follow-up questions into clear, explicit queries.
+
+CONVERSATION HISTORY:
+{conversation_text}
+
+CURRENT USER QUERY: "{query}"
+
+TASK:
+1. If the current query contains pronouns (it, they, them, this, that, etc.) or vague references, replace them with the specific subject from the conversation.
+2. If the query is already explicit and clear, return it unchanged.
+3. Preserve the user's intent exactly - just make implicit references explicit.
+
+EXAMPLES:
+- History mentions "Meri Zaat Zarra-e-Benishan" + Query "tell me more about it" → "tell me more about Meri Zaat Zarra-e-Benishan"
+- History mentions "Umera Ahmed" + Query "what else did she write" → "what other dramas did Umera Ahmed write"
+- History mentions "top 5 dramas" + Query "show their ratings" → "show ratings for the top 5 dramas"
+- Query "what are crime dramas" (no pronouns) → "what are crime dramas" (unchanged)
+
+Return ONLY the rewritten query, nothing else. No quotes, no explanation."""
+
+            response = self.llm.invoke(rewrite_prompt)
+            rewritten = response.content.strip().strip('"').strip("'")
+            
+            # Validate rewritten query
+            if rewritten and len(rewritten) > 3 and len(rewritten) < 500:
+                logger.info(f"✅ Query rewritten: '{query}' → '{rewritten}'")
+                return rewritten
+            else:
+                logger.warning(f"Rewriting produced invalid result, using original query")
+                return query
+                
+        except Exception as e:
+            logger.error(f"❌ Query rewriting failed: {e}. Using original query.")
+            return query
 
     def _enhance_time_based_query(self, query: str) -> str:
         """

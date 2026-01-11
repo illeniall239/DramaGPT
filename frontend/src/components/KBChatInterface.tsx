@@ -9,9 +9,16 @@ import {
     ExternalLink,
     ChevronDown,
     ChevronUp,
-    BookOpen
+    BookOpen,
+    AlertCircle
 } from 'lucide-react';
-import { queryKB, loadKBChatMessages, saveKBChatMessages, updateChatTitle, generateChatTitle } from '@/utils/api';
+import {
+    loadKBChatMessages,
+    saveChatMessages as saveKBChatMessages,
+    updateChatTitle,
+    generateChatTitle,
+    streamQueryKnowledgeBase
+} from '@/utils/api';
 import { ChatMessage, KBQueryResponse, KBSource } from '@/types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -86,51 +93,107 @@ export default function KBChatInterface({
             generateChatTitle(userInput).then(async (title) => {
                 try {
                     await updateChatTitle(chatId, title);
-                    console.log('✅ Chat title auto-generated:', title);
                 } catch (error) {
                     console.error('Failed to update chat title:', error);
                 }
             }).catch(err => console.error('Title generation failed:', err));
         }
 
+        // Add a placeholder assistant message that will be updated
+        const assistantPlaceholder: ChatMessage = {
+            role: 'assistant',
+            content: '',
+            timestamp: Date.now(),
+            isTyping: true // Optional UI flag
+        };
+
+        setMessages(prev => [...prev, assistantPlaceholder]);
+
         try {
-            const response: KBQueryResponse = await queryKB(kbId, userInput, chatId);
+            let finalContent = '';
+            let finalSources: KBSource[] = [];
+            let finalVisualization: any = null;
 
-            // Create assistant message
-            const assistantMessage: ChatMessage = {
+            await streamQueryKnowledgeBase(
+                kbId,
+                userInput,
+                chatId,
+                (chunk) => {
+                    if (chunk.status === 'thinking') {
+                        setMessages(prev => {
+                            const newMessages = [...prev];
+                            const last = newMessages[newMessages.length - 1];
+                            if (last.role === 'assistant') {
+                                last.content = '_Thinking..._';
+                            }
+                            return newMessages;
+                        });
+                    } else if (chunk.content) {
+                        finalContent = chunk.content;
+                        setMessages(prev => {
+                            const newMessages = [...prev];
+                            const last = newMessages[newMessages.length - 1];
+                            if (last.role === 'assistant') {
+                                last.content = chunk.content;
+                                last.isTyping = chunk.is_partial;
+                                if (chunk.is_final) {
+                                    last.sources = chunk.sources;
+                                    last.visualization = chunk.visualization;
+                                }
+                            }
+                            return newMessages;
+                        });
+                    } else if (chunk.is_final) {
+                        finalContent = chunk.content || finalContent;
+                        finalSources = chunk.sources || [];
+                        finalVisualization = chunk.visualization || null;
+                    } else if (chunk.error) {
+                        throw new Error(chunk.error);
+                    }
+                }
+            );
+
+            // Final sync of history
+            const updatedAssistantMessage: ChatMessage = {
                 role: 'assistant',
-                content: response.response,
+                content: finalContent,
                 timestamp: Date.now(),
-                visualization: response.visualization,
+                visualization: finalVisualization,
             };
-
-            // Add sources metadata (custom field)
-            if (response.sources && response.sources.length > 0) {
-                (assistantMessage as any).sources = response.sources;
+            if (finalSources.length > 0) {
+                (updatedAssistantMessage as any).sources = finalSources;
             }
 
-            const updatedMessages = [...messages, userMessage, assistantMessage];
-            setMessages(updatedMessages);
-
-            // Save messages to database
+            const updatedMessages = [...messages, userMessage, updatedAssistantMessage];
             try {
                 await saveKBChatMessages(chatId, updatedMessages);
             } catch (saveError) {
                 console.error('Failed to save messages:', saveError);
             }
+
         } catch (error) {
             console.error('Failed to query KB:', error);
 
+            const errorMsg = error instanceof Error ? error.message : 'Failed to process your question.';
+            const isRateLimit = errorMsg.includes('429') || errorMsg.toLowerCase().includes('quota') || errorMsg.toLowerCase().includes('rate limit');
+
             const errorMessage: ChatMessage = {
                 role: 'assistant',
-                content: `❌ Error: ${error instanceof Error ? error.message : 'Failed to process your question. Please try again.'}`,
-                timestamp: Date.now()
+                content: isRateLimit
+                    ? `### API Rate Limit Reached\n\nYour Gemini API quota has been exceeded. This usually happens on the free tier when sending too many requests in a short time.\n\n**Please wait 30-60 seconds before trying again.**`
+                    : `❌ Error: ${errorMsg}`,
+                timestamp: Date.now(),
+                isError: true,
+                errorType: isRateLimit ? 'rate_limit' : 'generic'
             };
 
-            const updatedMessages = [...messages, userMessage, errorMessage];
-            setMessages(updatedMessages);
+            setMessages(prev => {
+                const newMessages = [...prev];
+                newMessages[newMessages.length - 1] = errorMessage;
+                return newMessages;
+            });
 
-            // Save messages even if query failed
+            const updatedMessages = [...messages, userMessage, errorMessage];
             try {
                 await saveKBChatMessages(chatId, updatedMessages);
             } catch (saveError) {
@@ -165,17 +228,17 @@ export default function KBChatInterface({
             {/* Messages */}
             <div className="flex-1 overflow-y-auto">
                 {messages.length === 0 ? (
-                    <div className="h-full flex flex-col items-center justify-center text-center px-8 py-12">
-                        <BookOpen className="w-12 h-12 text-primary/60 mb-4" />
-                        <h3 className="text-xl font-display font-semibold text-foreground mb-2">
+                    <div className="h-full flex flex-col items-center justify-center text-center px-4 sm:px-8 py-12">
+                        <BookOpen className="w-10 h-10 sm:w-12 sm:h-12 text-primary/60 mb-4" />
+                        <h3 className="text-lg sm:text-xl font-display font-semibold text-foreground mb-2">
                             Start a Conversation
                         </h3>
-                        <p className="text-sm text-muted-foreground max-w-md mb-6 leading-relaxed">
+                        <p className="text-xs sm:text-sm text-muted-foreground max-w-md mb-6 leading-relaxed">
                             Ask questions about your uploaded documents, run analytics on your data,
                             or request predictions based on your knowledge base.
                         </p>
-                        <div className="space-y-2 w-full max-w-md">
-                            <p className="text-xs font-medium text-foreground mb-3 text-left">
+                        <div className="space-y-2 w-full max-w-sm sm:max-w-md">
+                            <p className="text-xs font-medium text-foreground mb-2 text-left">
                                 Try asking:
                             </p>
                             <button
@@ -202,36 +265,43 @@ export default function KBChatInterface({
                     messages.map((message, index) => (
                         <div
                             key={index}
-                            className={`w-full ${
-                                message.role === 'user' ? 'bg-white' : 'bg-muted/20'
-                            } border-b border-border/50`}
+                            className={`w-full ${message.role === 'user' ? 'bg-white' : 'bg-muted/20'
+                                } border-b border-border/50`}
                         >
-                            <div className="max-w-3xl mx-auto px-6 py-6">
+                            <div className="max-w-4xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
                                 <div
-                                    className={`flex gap-4 ${
-                                        message.role === 'user' ? 'flex-row-reverse' : 'flex-row'
-                                    }`}
+                                    className={`flex gap-3 sm:gap-4 ${message.role === 'user' ? 'flex-row-reverse' : 'flex-row'
+                                        }`}
                                 >
                                     {/* Avatar */}
                                     <div className="flex-shrink-0">
-                                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold ${
-                                            message.role === 'user'
-                                                ? 'bg-primary text-white'
-                                                : 'bg-accent text-accent-foreground'
-                                        }`}>
+                                        <div className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-[10px] sm:text-xs font-semibold ${message.role === 'user'
+                                            ? 'bg-primary text-white'
+                                            : 'bg-accent text-accent-foreground'
+                                            }`}>
                                             {message.role === 'user' ? 'U' : 'AI'}
                                         </div>
                                     </div>
 
                                     {/* Content */}
-                                    <div className={`flex-1 min-w-0 ${
-                                        message.role === 'user' ? 'text-right' : ''
-                                    }`}>
+                                    <div className={`flex-1 min-w-0 ${message.role === 'user' ? 'text-right' : ''
+                                        }`}>
                                         {/* Message Content */}
-                                        <div className="prose prose-sm max-w-none markdown-content">
-                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                                {message.content}
-                                            </ReactMarkdown>
+                                        <div className={`prose prose-sm max-w-none markdown-content ${message.isError ? 'text-red-600' : ''}`}>
+                                            {message.errorType === 'rate_limit' ? (
+                                                <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4 flex gap-3">
+                                                    <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+                                                    <div className="text-sm text-red-800">
+                                                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                                            {message.content}
+                                                        </ReactMarkdown>
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                                    {message.content}
+                                                </ReactMarkdown>
+                                            )}
                                         </div>
 
                                         {/* Visualization */}
@@ -325,8 +395,8 @@ export default function KBChatInterface({
                 {/* Typing Indicator */}
                 {isProcessing && (
                     <div className="w-full bg-muted/20 border-b border-border/50">
-                        <div className="max-w-3xl mx-auto px-6 py-6">
-                            <div className="flex gap-4">
+                        <div className="max-w-4xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
+                            <div className="flex gap-3 sm:gap-4">
                                 <div className="flex-shrink-0">
                                     <div className="w-8 h-8 rounded-full bg-accent text-accent-foreground flex items-center justify-center text-xs font-semibold">
                                         AI
@@ -347,23 +417,23 @@ export default function KBChatInterface({
             </div>
 
             {/* Input Area */}
-            <div className="border-t border-border bg-white px-4 py-4">
-                <div className="max-w-3xl mx-auto">
-                    <div className="flex gap-3 items-end">
+            <div className="border-t border-border bg-white px-2 sm:px-4 py-3 sm:py-4">
+                <div className="max-w-4xl mx-auto">
+                    <div className="flex gap-2 sm:gap-3 items-end">
                         <textarea
                             ref={inputRef}
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
                             onKeyDown={handleKeyDown}
-                            placeholder="Ask a question about your knowledge base..."
-                            className="flex-1 px-4 py-3 border border-border rounded-xl bg-white text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary resize-none shadow-sm"
+                            placeholder="Ask a question..."
+                            className="flex-1 px-3 sm:px-4 py-2 sm:py-3 border border-border rounded-xl bg-white text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary resize-none shadow-sm text-sm sm:text-base min-h-[44px] sm:min-h-[50px] max-h-32"
                             rows={1}
                             disabled={isProcessing}
                         />
                         <button
                             onClick={handleSendMessage}
                             disabled={!input.trim() || isProcessing}
-                            className="px-4 py-3 bg-primary text-white rounded-xl hover:bg-primary-hover disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center justify-center shadow-sm"
+                            className="p-2.5 sm:px-4 sm:py-3 bg-primary text-white rounded-xl hover:bg-primary-hover disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center justify-center shadow-sm"
                         >
                             {isProcessing ? (
                                 <Loader2 className="w-5 h-5 animate-spin" />

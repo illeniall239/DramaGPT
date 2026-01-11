@@ -61,6 +61,9 @@ export interface ChatMessage {
     };
     analysisError?: string;
     clarification?: ClarificationResponse;
+    sources?: KBSource[];
+    isError?: boolean;
+    errorType?: 'rate_limit' | 'generic' | 'other';
 }
 
 export interface DataState {
@@ -68,9 +71,9 @@ export interface DataState {
     preview: Record<string, any>[] | null;
     columns: string[] | null;
     filename: string | null;
-} 
+}
 
-export type AnalysisStage = 'upload' | 'analysis'; 
+export type AnalysisStage = 'upload' | 'analysis';
 
 export type WorkspaceType = 'work' | 'learn';
 

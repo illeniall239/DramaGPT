@@ -5,7 +5,7 @@ import { DataPreview, QueryResponse, Chat, ChatMessage } from '@/types';
 export async function uploadFile(file: File, workspaceId: string = 'default'): Promise<DataPreview> {
     if (!SUPPORTED_FILE_TYPES.includes(file.type as string)) {
         throw new Error('Unsupported file type. Please upload a CSV or Excel file.');
-    } 
+    }
 
     if (file.size > MAX_FILE_SIZE) {
         throw new Error('File size exceeds the maximum limit of 10MB.');
@@ -130,6 +130,65 @@ export async function sendQuery(query: string, chatId: string, options?: { isVoi
     }
 
     return data;
+}
+
+/**
+ * Stream query response from knowledge base (SSE)
+ */
+export async function streamQueryKnowledgeBase(
+    kbId: string,
+    query: string,
+    chatId?: string,
+    onChunk?: (data: any) => void
+): Promise<void> {
+    const url = `${API_BASE_URL}/api/kb/${kbId}/query/stream`;
+
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            question: query,
+            chat_id: chatId
+        }),
+    });
+
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to start stream');
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('Response body is null');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process SSE format: "data: {...}\n\n"
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep the incomplete line in buffer
+
+        for (const line of lines) {
+            if (line.startsWith('data: ')) {
+                try {
+                    const jsonStr = line.replace('data: ', '').trim();
+                    if (jsonStr) {
+                        const data = JSON.parse(jsonStr);
+                        onChunk?.(data);
+                    }
+                } catch (e) {
+                    console.error('Error parsing SSE line:', e);
+                }
+            }
+        }
+    }
 }
 
 export async function generateReport(options?: { format?: 'pdf' | 'html' }): Promise<{ report_id: string, status: string }> {
