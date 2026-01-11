@@ -581,7 +581,8 @@ class KnowledgeBaseRAG:
                     # Build custom prefix with formatting instructions
                     # CRITICAL: Pass prefix as DIRECT parameter, not in agent_kwargs
                     # LangChain will format {dialect} and {top_k} placeholders
-                    custom_prefix = SQL_PREFIX + f"""
+                    # Include system_message in prefix, not suffix (suffix has {agent_scratchpad})
+                    custom_prefix = system_message + "\n\n" + SQL_PREFIX + f"""
 
 CRITICAL: Format your Final Answer using this EXACT structure:
 
@@ -605,8 +606,8 @@ CRITICAL: Format your Final Answer using this EXACT structure:
                         handle_parsing_errors=handle_parsing_error,
                         max_iterations=config['max_iterations'],
                         max_execution_time=config['max_execution_time'],
-                        prefix=custom_prefix,  # ✅ Direct parameter - LangChain formats {dialect}
-                        suffix=f"\n\nContext:\n{system_message}\n\nRemember to format your final answer as specified above."
+                        prefix=custom_prefix  # ✅ Direct parameter - LangChain formats {dialect}
+                        # DON'T override suffix - it contains {agent_scratchpad} variable
                     )
 
                     # Execute agent
