@@ -506,10 +506,6 @@ async def query_knowledge_base_stream(kb_id: str, request: Dict[str, Any]):
                 except:
                     pass
 
-            # Yield an initial "thinking" state
-            yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
-            await asyncio.sleep(0.1)
-
             # For now, we call the sync query_kb but yield it in parts to simulate streaming
             # In a real prod app, we'd refactor query_kb to use callbacks/astream
             result = await asyncio.to_thread(
