@@ -317,8 +317,7 @@ class KnowledgeBaseRAG:
             if not docs_result.data or len(docs_result.data) == 0:
                 return {
                     'error': 'No documents found in this knowledge base',
-                    'response': 'No documents found in this knowledge base. Please upload a file first.',
-                    'sources': []
+                    'response': 'No documents found in this knowledge base. Please upload a file first.'
                 }
 
             docs = docs_result.data
@@ -340,8 +339,7 @@ class KnowledgeBaseRAG:
             if not tables_info:
                 return {
                     'error': 'No Postgres tables found',
-                    'response': 'No queryable data found in this knowledge base.',
-                    'sources': []
+                    'response': 'No queryable data found in this knowledge base.'
                 }
 
             logger.info(f"📊 Found {len(tables_info)} table(s) in KB")
@@ -355,8 +353,7 @@ class KnowledgeBaseRAG:
             if not db_url:
                 return {
                     'error': 'SUPABASE_DB_URL not configured',
-                    'response': 'Database connection not configured. Please check server settings.',
-                    'sources': []
+                    'response': 'Database connection not configured. Please check server settings.'
                 }
 
             engine = create_engine(db_url)
@@ -607,10 +604,8 @@ class KnowledgeBaseRAG:
                 return {
                     'error': agent_error,
                     'response': f"I encountered an error after {max_retries} attempts: {agent_error}\n\nThis query may be too complex. Try simplifying your question or breaking it into smaller parts.",
-                    'sources': [],
                     'method': 'sql_agent_failed',
-                    'tables_queried': [table_info['filename'] for table_info in tables_info],
-                    'num_sources': 0
+                    'tables_queried': [table_info['filename'] for table_info in tables_info]
                 }
 
             # Track which tables were actually queried
@@ -626,11 +621,9 @@ class KnowledgeBaseRAG:
             # Build response (no visualization in SQL agent branch)
             response_dict = {
                 'response': answer,
-                'sources': [],  # No sources displayed to user
                 'method': 'sql_agent',
                 'sql_queries': sql_queries,  # Keep for debugging
-                'tables_queried': tables_used,  # Track which files were used
-                'num_sources': len(tables_used)
+                'tables_queried': tables_used  # Track which files were used
             }
 
             return response_dict
@@ -641,8 +634,7 @@ class KnowledgeBaseRAG:
             traceback.print_exc()
             return {
                 'error': str(e),
-                'response': f"I encountered an error: {str(e)}",
-                'sources': []
+                'response': f"I encountered an error: {str(e)}"
             }
 
     def _generate_visualization_directly(
@@ -686,8 +678,7 @@ class KnowledgeBaseRAG:
             if not tables_info:
                 return {
                     'error': 'No tables available',
-                    'response': 'No data tables found in this knowledge base.',
-                    'sources': []
+                    'response': 'No data tables found in this knowledge base.'
                 }
 
             table_info = tables_info[0]  # Use first table
@@ -793,8 +784,7 @@ Generate ONLY the Python code with NO import statements."""
                 logger.error("Chart generation failed")
                 return {
                     'error': 'Chart generation failed',
-                    'response': "I couldn't generate the visualization.",
-                    'sources': []
+                    'response': "I couldn't generate the visualization."
                 }
 
             logger.info(f"✅ Visualization created: {visualization['filename']}")
@@ -828,10 +818,8 @@ Provide ONLY the summary text."""
             # Build response
             response_dict = {
                 'response': summary,
-                'sources': [],
                 'method': 'direct_visualization',
                 'tables_queried': [table_info['filename']],
-                'num_sources': 1,
                 'visualization': {
                     'type': visualization['type'],
                     'path': f"/static/visualizations/{visualization['filename']}",
@@ -846,8 +834,7 @@ Provide ONLY the summary text."""
             logger.exception("Full traceback:")
             return {
                 'error': str(e),
-                'response': f"I encountered an error generating the visualization: {str(e)}",
-                'sources': []
+                'response': f"I encountered an error generating the visualization: {str(e)}"
             }
 
     def _format_conversation_context(self, conversation_history: List[Dict]) -> str:

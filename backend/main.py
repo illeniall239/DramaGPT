@@ -458,8 +458,7 @@ async def query_knowledge_base(kb_id: str, request: Dict[str, Any]):
                 assistant_msg = {
                     'role': 'assistant',
                     'content': result['response'],
-                    'timestamp': pd.Timestamp.now().isoformat(),
-                    'sources': result.get('sources', [])
+                    'timestamp': pd.Timestamp.now().isoformat()
                 }
                 if 'visualization' in result:
                     assistant_msg['visualization'] = result['visualization']
@@ -538,10 +537,9 @@ async def query_knowledge_base_stream(kb_id: str, request: Dict[str, Any]):
                     yield f"data: {json.dumps(chunk)}\n\n"
                     await asyncio.sleep(0.05)
 
-            # Send final complete result with sources and visualization
+            # Send final complete result with visualization
             final_payload = {
                 'content': full_text,
-                'sources': result.get('sources', []),
                 'visualization': result.get('visualization', None),
                 'is_final': True
             }
