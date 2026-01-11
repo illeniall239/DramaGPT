@@ -99,16 +99,6 @@ export default function KBChatInterface({
             }).catch(err => console.error('Title generation failed:', err));
         }
 
-        // Add a placeholder assistant message that will be updated
-        const assistantPlaceholder: ChatMessage = {
-            role: 'assistant',
-            content: '',
-            timestamp: Date.now(),
-            isTyping: true // Optional UI flag
-        };
-
-        setMessages(prev => [...prev, assistantPlaceholder]);
-
         try {
             let finalContent = '';
             let finalSources: KBSource[] = [];
@@ -119,23 +109,24 @@ export default function KBChatInterface({
                 userInput,
                 chatId,
                 (chunk) => {
-                    if (chunk.status === 'thinking') {
-                        setMessages(prev => {
-                            const newMessages = [...prev];
-                            const last = newMessages[newMessages.length - 1];
-                            if (last.role === 'assistant') {
-                                last.content = '_Thinking..._';
-                            }
-                            return newMessages;
-                        });
-                    } else if (chunk.content) {
+                    if (chunk.content) {
                         finalContent = chunk.content;
                         setMessages(prev => {
                             const newMessages = [...prev];
                             const last = newMessages[newMessages.length - 1];
-                            if (last.role === 'assistant') {
+
+                            // If no assistant message exists yet, create one
+                            if (!last || last.role !== 'assistant') {
+                                newMessages.push({
+                                    role: 'assistant',
+                                    content: chunk.content,
+                                    timestamp: Date.now(),
+                                    isTyping: !chunk.is_final
+                                });
+                            } else {
+                                // Update existing assistant message
                                 last.content = chunk.content;
-                                last.isTyping = chunk.is_partial;
+                                last.isTyping = !chunk.is_final;
                                 if (chunk.is_final) {
                                     last.sources = chunk.sources;
                                     last.visualization = chunk.visualization;
@@ -189,7 +180,15 @@ export default function KBChatInterface({
 
             setMessages(prev => {
                 const newMessages = [...prev];
-                newMessages[newMessages.length - 1] = errorMessage;
+                const last = newMessages[newMessages.length - 1];
+
+                // If assistant message doesn't exist (because we removed placeholder), add error message
+                if (!last || last.role !== 'assistant') {
+                    newMessages.push(errorMessage);
+                } else {
+                    // Replace placeholder with error
+                    newMessages[newMessages.length - 1] = errorMessage;
+                }
                 return newMessages;
             });
 
