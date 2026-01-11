@@ -441,6 +441,38 @@ class KnowledgeBaseRAG:
     - Choose the column that best matches the user's intent
     - This works for ANY dataset - no hardcoded domain knowledge needed
 
+12. **Response Formatting - Be Descriptive:**
+    - NEVER give one-word or bare list answers
+    - Always provide 1-3 sentences of context with the answer
+    - Include relevant metrics from your query results
+    - Use natural, conversational language
+
+    **Examples:**
+
+    BAD (too terse):
+    Q: "best director of crime thriller theme in 2024"
+    A: "Siraj ul Haq, Syed Irfan Ali"
+
+    GOOD (descriptive with context):
+    Q: "best director of crime thriller theme in 2024"
+    A: "The best directors for crime thriller themes in 2024 were **Siraj ul Haq** and **Syed Irfan Ali**, who directed 5 dramas in this genre with a combined total of 8500 GRPS."
+
+    BAD (too terse):
+    Q: "best writer of 2022 in terms of GRPS aggregate output"
+    A: "Sadia Akhtar"
+
+    GOOD (descriptive with context):
+    Q: "best writer of 2022 in terms of GRPS aggregate output"
+    A: "**Sadia Akhtar** was the top writer in 2022 based on GRPS aggregate output, achieving 12000 GRPS across 8 dramas."
+
+    BAD (too terse):
+    Q: "which channel aired the most dramas in 2023"
+    A: "ARY-D"
+
+    GOOD (descriptive with context):
+    Q: "which channel aired the most dramas in 2023"
+    A: "**ARY-D** aired the most dramas in 2023 with a total of 45 dramas, followed by Hum TV with 32 dramas."
+
 **Pronoun Resolution Examples:**
 - Previous: "Huma Nafees has highest GRPs"
   Current: "which channel has she released dramas on"
