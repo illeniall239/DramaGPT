@@ -444,37 +444,68 @@ class KnowledgeBaseRAG:
     - Choose the column that best matches the user's intent
     - This works for ANY dataset - no hardcoded domain knowledge needed
 
-12. **Response Formatting - Be Descriptive:**
-    - NEVER give one-word or bare list answers
-    - Always provide 1-3 sentences of context with the answer
-    - Include relevant metrics from your query results
-    - Use natural, conversational language
+12. **Response Formatting - ALWAYS Use This Structured Template:**
 
-    **Examples:**
+    You MUST format ALL responses using this exact structure:
 
-    BAD (too terse):
-    Q: "best director of crime thriller theme in 2024"
-    A: "Siraj ul Haq, Syed Irfan Ali"
+    **Summary:**
+    [1-2 sentence direct answer to the query]
 
-    GOOD (descriptive with context):
-    Q: "best director of crime thriller theme in 2024"
-    A: "The best directors for crime thriller themes in 2024 were **Siraj ul Haq** and **Syed Irfan Ali**, who directed 5 dramas in this genre with a combined total of 8500 GRPS."
+    **Key Metrics:** (or **Rankings:** for lists, **Comparison:** for comparisons)
+    - Point 1: [value] ([context if relevant])
+    - Point 2: [value] ([context if relevant])
+    - Point 3+: [additional metrics as needed]
 
-    BAD (too terse):
+    **Analysis:**
+    [Contextual paragraph providing trends, comparisons, insights, or additional context]
+
+    **Formatting Rules:**
+    - Use **bold** for section headers (Summary, Key Metrics, Analysis, etc.)
+    - Use bullet points (- ) for all metrics and data points
+    - Include context in parentheses where helpful
+    - Keep Summary to 1-2 sentences maximum
+    - Make Analysis insightful with comparisons or trends
+
+    **CORRECT Examples:**
+
+    Example 1 - Single Entity Query:
     Q: "best writer of 2022 in terms of GRPS aggregate output"
-    A: "Sadia Akhtar"
+    A: "**Summary:**
+    Sadia Akhtar was the top-performing writer in 2022 based on GRPS aggregate output.
 
-    GOOD (descriptive with context):
-    Q: "best writer of 2022 in terms of GRPS aggregate output"
-    A: "**Sadia Akhtar** was the top writer in 2022 based on GRPS aggregate output, achieving 12000 GRPS across 8 dramas."
+    **Key Metrics:**
+    - Total GRPS: 6,639 (highest in 2022)
+    - Number of dramas: 8 productions
+    - Average GRPS per drama: 830
 
-    BAD (too terse):
-    Q: "which channel aired the most dramas in 2023"
-    A: "ARY-D"
+    **Analysis:**
+    Sadia Akhtar's success in 2022 was driven by consistent high-quality content across multiple channels, outperforming the second-ranked writer by 15% in aggregate GRPS."
 
-    GOOD (descriptive with context):
-    Q: "which channel aired the most dramas in 2023"
-    A: "**ARY-D** aired the most dramas in 2023 with a total of 45 dramas, followed by Hum TV with 32 dramas."
+    Example 2 - Ranking Query:
+    Q: "top 3 channels by drama count in 2024"
+    A: "**Summary:**
+    ARY-D, Hum TV, and Geo Entertainment were the leading channels by drama count in 2024.
+
+    **Rankings:**
+    - 1st: ARY-D - 45 dramas (34% market share)
+    - 2nd: Hum TV - 38 dramas (29% market share)
+    - 3rd: Geo Entertainment - 27 dramas (20% market share)
+
+    **Analysis:**
+    ARY-D maintained its dominant position with a 19% increase from 2023. The top three channels collectively produced 82% of all dramas."
+
+    Example 3 - Comparison Query:
+    Q: "compare crime thriller dramas between 2023 and 2024"
+    A: "**Summary:**
+    Crime thriller dramas saw a 23% increase in production from 2023 to 2024 with improved viewership.
+
+    **Year-over-Year Comparison:**
+    - 2023: 34 dramas, average GRPS 720
+    - 2024: 42 dramas, average GRPS 850 (+18%)
+    - Growth: +8 dramas, +130 average GRPS
+
+    **Analysis:**
+    The surge in crime thriller content reflects strong audience demand. 2024 productions benefited from higher budgets and experienced directors, resulting in both quantity and quality improvements."
 
 **Pronoun Resolution Examples:**
 - Previous: "Huma Nafees has highest GRPs"
@@ -558,7 +589,7 @@ class KnowledgeBaseRAG:
                         max_execution_time=config['max_execution_time'],
                         agent_kwargs={
                             "system_message": system_message,
-                            "prefix": f"Answer the question about data in the available table(s). CRITICAL: When providing your Final Answer, ALWAYS include 1-3 sentences of context with relevant metrics from your query results. Never give one-word or bare list answers."
+                            "prefix": f"Answer the question about data in the available table(s). CRITICAL: Format your Final Answer using this EXACT structure:\n\n**Summary:**\n[Direct answer in 1-2 sentences]\n\n**Key Metrics:** (or Rankings/Comparison)\n- Point 1: [value] ([context])\n- Point 2: [value] ([context])\n\n**Analysis:**\n[Contextual paragraph with insights]"
                         }
                     )
 
