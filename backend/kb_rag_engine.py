@@ -555,7 +555,7 @@ class KnowledgeBaseRAG:
                         max_execution_time=config['max_execution_time'],
                         agent_kwargs={
                             "system_message": system_message,
-                            "prefix": f"Answer the question about data in the available table(s)."
+                            "prefix": f"Answer the question about data in the available table(s). CRITICAL: When providing your Final Answer, ALWAYS include 1-3 sentences of context with relevant metrics from your query results. Never give one-word or bare list answers."
                         }
                     )
 
