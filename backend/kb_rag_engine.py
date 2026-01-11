@@ -578,19 +578,10 @@ class KnowledgeBaseRAG:
                     exploration_tools = create_sql_exploration_tools(db=db)
                     logger.info(f"Created {len(exploration_tools)} exploration tools for column analysis")
 
-                    # Create SQL agent with current config and exploration tools
-                    sql_agent = create_sql_agent(
-                        llm=self.llm,
-                        toolkit=toolkit,
-                        extra_tools=exploration_tools,  # Add custom exploration tools
-                        agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-                        verbose=True,
-                        handle_parsing_errors=handle_parsing_error,
-                        max_iterations=config['max_iterations'],
-                        max_execution_time=config['max_execution_time'],
-                        agent_kwargs={
-                            "system_message": system_message,
-                            "prefix": SQL_PREFIX + f"""
+                    # Build custom prefix with formatting instructions
+                    # CRITICAL: Pass prefix as DIRECT parameter, not in agent_kwargs
+                    # LangChain will format {dialect} and {top_k} placeholders
+                    custom_prefix = SQL_PREFIX + f"""
 
 CRITICAL: Format your Final Answer using this EXACT structure:
 
@@ -603,7 +594,19 @@ CRITICAL: Format your Final Answer using this EXACT structure:
 
 **Analysis:**
 [Contextual paragraph with insights]"""
-                        }
+
+                    # Create SQL agent with current config and exploration tools
+                    sql_agent = create_sql_agent(
+                        llm=self.llm,
+                        toolkit=toolkit,
+                        extra_tools=exploration_tools,  # Add custom exploration tools
+                        agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+                        verbose=True,
+                        handle_parsing_errors=handle_parsing_error,
+                        max_iterations=config['max_iterations'],
+                        max_execution_time=config['max_execution_time'],
+                        prefix=custom_prefix,  # ✅ Direct parameter - LangChain formats {dialect}
+                        suffix=f"\n\nContext:\n{system_message}\n\nRemember to format your final answer as specified above."
                     )
 
                     # Execute agent
@@ -642,14 +645,36 @@ CRITICAL: Format your Final Answer using this EXACT structure:
 
                     attempt += 1
 
-            # If all retries failed
+            # If all SQL agent retries failed, try DataFrame fallback
             if agent_error and attempt == max_retries:
-                logger.error(f"❌ All {max_retries} attempts failed")
+                logger.warning(f"⚠️ SQL agent failed after {max_retries} attempts. Trying DataFrame fallback approach...")
+
+                # Try DataFrame approach as fallback
+                try:
+                    fallback_result = self._query_with_dataframe(
+                        query=enhanced_query,
+                        table_name=all_table_names[0]
+                    )
+
+                    # If DataFrame approach succeeded
+                    if fallback_result.get('approach') == 'dataframe':
+                        logger.info("✅ DataFrame fallback succeeded!")
+                        fallback_result['method'] = 'dataframe_fallback'
+                        fallback_result['tables_queried'] = [table_info['filename'] for table_info in tables_info]
+                        fallback_result['sql_agent_error'] = agent_error  # Keep original error for logging
+                        return fallback_result
+
+                except Exception as fallback_error:
+                    logger.error(f"❌ DataFrame fallback also failed: {fallback_error}")
+
+                # Both approaches failed
+                logger.error(f"❌ All approaches failed (SQL agent + DataFrame)")
                 return {
                     'error': agent_error,
-                    'response': f"I encountered an error after {max_retries} attempts: {agent_error}\n\nThis query may be too complex. Try simplifying your question or breaking it into smaller parts.",
-                    'method': 'sql_agent_failed',
-                    'tables_queried': [table_info['filename'] for table_info in tables_info]
+                    'response': f"I encountered errors trying multiple approaches to answer your question.\n\nCould you try rephrasing? For example: 'Show me the top 3 directors by GRPS in 2024 for crime thrillers'",
+                    'method': 'all_failed',
+                    'tables_queried': [table_info['filename'] for table_info in tables_info],
+                    'sql_agent_error': agent_error
                 }
 
             # Track which tables were actually queried
@@ -879,6 +904,166 @@ Provide ONLY the summary text."""
             return {
                 'error': str(e),
                 'response': f"I encountered an error generating the visualization: {str(e)}"
+            }
+
+    def _query_with_dataframe(self, query: str, table_name: str, max_retries: int = 3) -> dict:
+        """
+        Fallback approach: Load data into pandas and generate Python code instead of SQL.
+
+        This is more reliable than SQL generation because:
+        - Python syntax errors are caught before execution with ast.parse()
+        - Error messages are clearer for LLMs to understand
+        - Retry loop is simpler with better error feedback
+        - Already proven working in visualization code (lines 756-801)
+
+        Args:
+            query: User's natural language query
+            table_name: Name of the table to load
+            max_retries: Maximum number of retry attempts
+
+        Returns:
+            Dict with response, approach='dataframe', and generated code
+        """
+        import pandas as pd
+        import ast
+
+        try:
+            # Load data into DataFrame
+            logger.info(f"📊 Loading table '{table_name}' into DataFrame for fallback approach")
+            df = pd.read_sql_table(table_name, self.engine)
+            logger.info(f"✅ Loaded {len(df)} rows with {len(df.columns)} columns")
+
+            # Get sample data for better code generation
+            sample_data = df.head(3).to_string(max_colwidth=50)
+
+            error_feedback = None
+            generated_code = None
+
+            for attempt in range(max_retries):
+                logger.info(f"🔄 DataFrame query attempt {attempt + 1}/{max_retries}")
+
+                # Generate Python code with LLM
+                prompt = f"""Generate Python code to answer this query using pandas.
+
+DataFrame 'df' is already loaded with {len(df)} rows.
+
+Columns: {list(df.columns)}
+
+Sample data:
+{sample_data}
+
+Query: "{query}"
+
+{"Previous attempt failed with error: " + error_feedback if error_feedback else ""}
+
+Requirements:
+1. Use ONLY pandas operations on the 'df' variable
+2. Store the final answer in a variable called 'result'
+3. Make 'result' a simple Python dict with 'data' key containing the answer
+4. Use exact column names from the list above (case-sensitive)
+5. NO file operations, NO imports, NO dangerous operations
+6. Keep code simple and safe
+
+Example for "top 3 directors by GRPS":
+result = {{'data': df.groupby('Director')['GRPS'].sum().nlargest(3).to_dict()}}
+
+Generate ONLY the Python code, no markdown, no explanation."""
+
+                response = self.llm.invoke(prompt)
+                code = response.content.strip()
+
+                # Extract code if wrapped in markdown
+                if '```python' in code:
+                    code = code.split('```python')[1].split('```')[0].strip()
+                elif '```' in code:
+                    code = code.split('```')[1].split('```')[0].strip()
+
+                generated_code = code
+                logger.info(f"Generated code:\n{code}")
+
+                # Validate syntax BEFORE execution
+                try:
+                    ast.parse(code)
+                    logger.info("✅ Code syntax is valid")
+                except SyntaxError as e:
+                    error_feedback = f"Syntax error on line {e.lineno}: {e.msg}"
+                    logger.warning(f"❌ Syntax validation failed: {error_feedback}")
+                    continue
+
+                # Execute code safely with restricted scope
+                local_vars = {"df": df, "pd": pd, "np": np}
+                try:
+                    exec(code, {"__builtins__": {}}, local_vars)
+                    result = local_vars.get('result', {})
+
+                    # Validate result structure
+                    if not isinstance(result, dict) or 'data' not in result:
+                        error_feedback = "Result must be a dict with 'data' key"
+                        logger.warning(f"❌ Invalid result structure: {error_feedback}")
+                        continue
+
+                    logger.info(f"✅ DataFrame query succeeded on attempt {attempt + 1}")
+
+                    # Format results into natural language response
+                    data = result['data']
+
+                    # Ask LLM to format the data into a nice response
+                    format_prompt = f"""Format this query result into a natural language response.
+
+Original query: "{query}"
+
+Result data:
+{data}
+
+Provide a clear, concise response using the structured format:
+
+**Summary:**
+[Direct answer in 1-2 sentences]
+
+**Key Metrics:** (or Rankings/Comparison/Results as appropriate)
+- Point 1: [value] ([context if relevant])
+- Point 2: [value] ([context if relevant])
+- Point 3+: [additional points as needed]
+
+**Analysis:**
+[Contextual paragraph providing insights or context]"""
+
+                    format_response = self.llm.invoke(format_prompt)
+                    formatted_answer = format_response.content.strip()
+
+                    return {
+                        "response": formatted_answer,
+                        "approach": "dataframe",
+                        "code": generated_code,
+                        "sql_queries": []  # No SQL used
+                    }
+
+                except KeyError as e:
+                    error_feedback = f"Column not found: {e}. Available columns: {list(df.columns)}"
+                    logger.warning(f"❌ Execution failed: {error_feedback}")
+                    continue
+
+                except Exception as e:
+                    error_feedback = f"{type(e).__name__}: {str(e)}"
+                    logger.warning(f"❌ Execution failed: {error_feedback}")
+                    continue
+
+            # If all retries failed
+            logger.error(f"❌ DataFrame approach failed after {max_retries} attempts")
+            return {
+                "response": "I had trouble processing this query with multiple approaches. Could you rephrase it? For example: 'Show me the top 3 directors by GRPS in 2024'",
+                "approach": "failed",
+                "error": error_feedback,
+                "code": generated_code
+            }
+
+        except Exception as e:
+            logger.error(f"❌ DataFrame query error: {e}")
+            logger.exception("Full traceback:")
+            return {
+                "response": f"I encountered an error loading the data: {str(e)}",
+                "approach": "failed",
+                "error": str(e)
             }
 
     def _format_conversation_context(self, conversation_history: List[Dict]) -> str:
