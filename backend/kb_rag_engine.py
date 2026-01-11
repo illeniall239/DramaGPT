@@ -22,6 +22,7 @@ import numpy as np  # Keep for type hints in old RAG methods
 from sqlalchemy import create_engine, text
 from langchain_community.utilities import SQLDatabase
 from langchain_community.agent_toolkits import SQLDatabaseToolkit, create_sql_agent
+from langchain_community.agent_toolkits.sql.prompt import SQL_PREFIX
 from langchain.agents import AgentType
 from sql_agent_tools import create_sql_exploration_tools
 
@@ -589,7 +590,19 @@ class KnowledgeBaseRAG:
                         max_execution_time=config['max_execution_time'],
                         agent_kwargs={
                             "system_message": system_message,
-                            "prefix": f"Answer the question about data in the available table(s). CRITICAL: Format your Final Answer using this EXACT structure:\n\n**Summary:**\n[Direct answer in 1-2 sentences]\n\n**Key Metrics:** (or Rankings/Comparison)\n- Point 1: [value] ([context])\n- Point 2: [value] ([context])\n\n**Analysis:**\n[Contextual paragraph with insights]"
+                            "prefix": SQL_PREFIX + f"""
+
+CRITICAL: Format your Final Answer using this EXACT structure:
+
+**Summary:**
+[Direct answer in 1-2 sentences]
+
+**Key Metrics:** (or Rankings/Comparison)
+- Point 1: [value] ([context])
+- Point 2: [value] ([context])
+
+**Analysis:**
+[Contextual paragraph with insights]"""
                         }
                     )
 
@@ -925,6 +938,7 @@ Provide ONLY the summary text."""
             needs_rewriting = True
         
         if not needs_rewriting:
+            logger.info(f"✅ Query doesn't need rewriting: '{query}'")
             return query
         
         logger.info(f"🔄 Query may need rewriting: '{query}'")
@@ -948,22 +962,50 @@ CONVERSATION HISTORY:
 
 CURRENT USER QUERY: "{query}"
 
+CRITICAL RULES:
+1. ONLY use entity names (people, channels, shows, etc.) that appear in the conversation history above
+2. DO NOT add new entity names, channel names, or keywords that weren't explicitly mentioned
+3. If the query is already clear and explicit, return it UNCHANGED
+
 TASK:
-1. If the current query contains pronouns (it, they, them, this, that, etc.) or vague references, replace them with the specific subject from the conversation.
-2. If the query is already explicit and clear, return it unchanged.
-3. Preserve the user's intent exactly - just make implicit references explicit.
+1. If the current query contains pronouns (it, they, them, this, that, etc.) or vague references, replace ONLY those pronouns with the specific subject from the conversation
+2. DO NOT add any information beyond resolving pronouns - preserve the user's query exactly otherwise
+3. If the query is already explicit and clear, return it unchanged
 
 EXAMPLES:
+Positive examples (expand pronouns):
 - History mentions "Meri Zaat Zarra-e-Benishan" + Query "tell me more about it" → "tell me more about Meri Zaat Zarra-e-Benishan"
 - History mentions "Umera Ahmed" + Query "what else did she write" → "what other dramas did Umera Ahmed write"
 - History mentions "top 5 dramas" + Query "show their ratings" → "show ratings for the top 5 dramas"
-- Query "what are crime dramas" (no pronouns) → "what are crime dramas" (unchanged)
+
+Negative examples (don't add new entities):
+- Query "top directors by GRPS in crime dramas" (already explicit) → "top directors by GRPS in crime dramas" (UNCHANGED)
+- History doesn't mention channel + Query "best writers last year" → "best writers last year" (UNCHANGED - don't add "Geo Entertainment")
+- Query "what are crime dramas" (no pronouns) → "what are crime dramas" (UNCHANGED)
 
 Return ONLY the rewritten query, nothing else. No quotes, no explanation."""
 
             response = self.llm.invoke(rewrite_prompt)
             rewritten = response.content.strip().strip('"').strip("'")
-            
+
+            # Check for hallucinated entities (safety check)
+            def extract_capitalized_entities(text):
+                """Extract potential entity names (capitalized multi-word phrases)"""
+                return set(re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+', text))
+
+            query_entities = extract_capitalized_entities(query)
+            rewritten_entities = extract_capitalized_entities(rewritten)
+            new_entities = rewritten_entities - query_entities
+
+            # Check if new entities appear in conversation history
+            if new_entities:
+                history_text = "\n".join([msg.get('content', '') for msg in conversation_history])
+                hallucinated = [e for e in new_entities if e not in history_text]
+
+                if hallucinated:
+                    logger.warning(f"⚠️ Rewriter added entities not in history: {hallucinated}. Using original query.")
+                    return query
+
             # Validate rewritten query
             if rewritten and len(rewritten) > 3 and len(rewritten) < 500:
                 logger.info(f"✅ Query rewritten: '{query}' → '{rewritten}'")
