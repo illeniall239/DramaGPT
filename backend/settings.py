@@ -16,18 +16,19 @@ if not google_api_key:
         "Please add it to your .env file or Cloud Run environment variables."
     )
 
-# Initialize Gemini 2.0 Flash Experimental with billing-enabled API key
+# Initialize Gemini 2.0 Flash with billing-enabled API key
 # Benefits:
-# - 1M context window
+# - 1M context window (1,048,576 tokens input)
+# - 8,192 output token limit
 # - 2M tokens/month FREE tier, then pay-as-you-go
 # - Much higher rate limits than AI Studio free tier
-# - Excellent reasoning capabilities
+# - Function calling, code execution, and grounding support
 LLM = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash-exp",
+    model="gemini-2.0-flash",
     temperature=0.0,  # Deterministic responses
     google_api_key=google_api_key,
     max_output_tokens=8000,
     convert_system_message_to_human=True  # Required for Gemini
 )
 
-print(f"✅ LLM configured: Gemini 2.0 Flash Experimental with billing-enabled quotas")
+print(f"✅ LLM configured: Gemini 2.0 Flash (latest) with billing-enabled quotas")
