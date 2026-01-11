@@ -23,7 +23,7 @@ if not google_api_key:
 # - Much higher rate limits than AI Studio free tier
 # - Excellent reasoning capabilities
 LLM = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
+    model="gemini-1.5-flash-latest",
     temperature=0.0,  # Deterministic responses
     google_api_key=google_api_key,
     max_output_tokens=8000,
