@@ -426,7 +426,33 @@ class KnowledgeBaseRAG:
 9. **Resolve pronouns and references using conversation context above**
 10. **FORMAT NUMBERS AS WHOLE INTEGERS - do not include decimal places in your responses**
     Example: Say "GRPS is 3159" NOT "GRPS is 3159.682"
-11. **UNIVERSAL Column Selection Strategy:**
+
+11. **TEXT PATTERN MATCHING STRATEGY:**
+
+    When filtering text columns, determine the matching strategy:
+
+    **Use LIKE with wildcards** when:
+    - Column contains slash-separated values (e.g., "Crime/Thriller", "Love/Romance/Drama")
+    - Searching for partial matches or keywords
+    - User query mentions categories/themes that might appear combined
+
+    Examples:
+    - Column value: "Crime/Thriller/Mystery"
+    - User asks: "crime dramas"
+    - Query: WHERE LOWER("Theme") LIKE '%crime%'
+
+    **Use exact match (=)** when:
+    - Column contains single discrete values
+    - User specifies exact name (e.g., specific actor, drama title)
+    - Matching unique identifiers
+
+    **IMPORTANT**: When you see sample values with slashes (/) in the schema,
+    ALWAYS use LIKE for filtering that column. Example:
+    - Schema shows: Theme: "Crime/Thriller", "Love/Romance", "Drama/Family"
+    - For "crime" queries: WHERE LOWER("Theme") LIKE '%crime%'
+    - For "romance" queries: WHERE LOWER("Theme") LIKE '%romance%'
+
+12. **UNIVERSAL Column Selection Strategy:**
     - The schema above shows DISTINCT COUNTS and CARDINALITY for each column
     - High distinct count (e.g., 42) = likely contains varied categorical data (good for filtering)
     - Low distinct count (e.g., 1) = probably not useful for filtering (all rows have same value)
@@ -445,7 +471,7 @@ class KnowledgeBaseRAG:
     - Choose the column that best matches the user's intent
     - This works for ANY dataset - no hardcoded domain knowledge needed
 
-12. **Response Formatting - ALWAYS Use This Structured Template:**
+13. **Response Formatting - ALWAYS Use This Structured Template:**
 
     You MUST format ALL responses using this exact structure:
 
@@ -527,9 +553,15 @@ class KnowledgeBaseRAG:
             # Define custom error handler for parsing errors
             def handle_parsing_error(error) -> str:
                 """Handle parsing errors by returning a helpful message to the agent."""
+                logger.warning(f"⚠️ Parsing error encountered: {str(error)[:200]}")
                 return (
-                    "I encountered a formatting error. Let me provide the final answer.\n"
-                    "I should respond with 'Final Answer:' followed by the complete answer to the user's question."
+                    "OUTPUT FORMAT ERROR: Your previous response had formatting issues.\n\n"
+                    "Please provide your Final Answer using this structure:\n"
+                    "Final Answer: [Complete answer to the user's question]\n\n"
+                    "Make sure to:\n"
+                    "1. Start with 'Final Answer:'\n"
+                    "2. Include all relevant data and metrics\n"
+                    "3. Use the structured format (Summary, Key Metrics, Analysis)"
                 )
 
             # Step 4: Check if visualization is requested
@@ -633,6 +665,13 @@ CRITICAL: Format your Final Answer using this EXACT structure:
                     # Classify error
                     error_info = self._classify_error_type(e)
                     logger.info(f"Error classified as: {error_info['error_type']}")
+
+                    # For parsing errors, log additional debugging information
+                    if error_info['error_type'] == 'parsing':
+                        logger.warning(f"⚠️ Parsing error details:")
+                        logger.warning(f"   - Error message: {agent_error[:500]}")
+                        logger.warning(f"   - This may be due to malformed LLM output")
+                        logger.warning(f"   - The handle_parsing_error function should provide recovery guidance")
 
                     # Check if should retry
                     if not error_info['should_retry'] or attempt == max_retries - 1:

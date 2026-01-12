@@ -88,9 +88,18 @@ LIMIT {limit}
 '''
             result = self.db.run_no_throw(values_query)
 
+            # Detect slash-separated values in the result
+            has_slashes = '/' in result
+
             # Format response
             response = f'Column "{column_name}" has {distinct_count} distinct values.\n\n'
             response += f'Top {limit} values with counts:\n{result}\n\n'
+
+            # Add warning for slash-separated values
+            if has_slashes:
+                response += '⚠️ IMPORTANT: This column contains slash-separated values (e.g., "Crime/Thriller").\n'
+                response += 'Use LIKE with wildcards for filtering: WHERE LOWER("' + column_name + '") LIKE \'%keyword%\'\n\n'
+
             response += 'Use this information to decide if this column contains the data you need for the query.'
 
             logger.info(f"✅ Successfully explored column {column_name}")
