@@ -361,11 +361,6 @@ class KnowledgeBaseRAG:
             db = SQLDatabase(engine, include_tables=all_table_names)  # Pass ALL tables
             toolkit = SQLDatabaseToolkit(db=db, llm=self.llm)
 
-            # Log detected SQL dialect for verification
-            detected_dialect = toolkit.dialect
-            logger.info(f"🔍 SQLDatabase detected dialect: {detected_dialect}")
-            logger.info(f"🔍 Database URL prefix: {db_url.split(':')[0] if db_url else 'N/A'}")
-
             # Step 4: Build enriched system message with column analysis
             table_descriptions = []
             for table_info in tables_info:
@@ -587,11 +582,19 @@ class KnowledgeBaseRAG:
                     exploration_tools = create_sql_exploration_tools(db=db)
                     logger.info(f"Created {len(exploration_tools)} exploration tools for column analysis")
 
-                    # Build custom prefix with formatting instructions
-                    # CRITICAL: Pass prefix as DIRECT parameter, not in agent_kwargs
-                    # LangChain will format {dialect} and {top_k} placeholders
-                    # Include system_message in prefix, not suffix (suffix has {agent_scratchpad})
-                    custom_prefix = system_message + "\n\n" + SQL_PREFIX + f"""
+                    # Create SQL agent with current config and exploration tools
+                    sql_agent = create_sql_agent(
+                        llm=self.llm,
+                        toolkit=toolkit,
+                        extra_tools=exploration_tools,  # Add custom exploration tools
+                        agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+                        verbose=True,
+                        handle_parsing_errors=handle_parsing_error,
+                        max_iterations=config['max_iterations'],
+                        max_execution_time=config['max_execution_time'],
+                        agent_kwargs={
+                            "system_message": system_message,
+                            "prefix": SQL_PREFIX + f"""
 
 CRITICAL: Format your Final Answer using this EXACT structure:
 
@@ -604,27 +607,7 @@ CRITICAL: Format your Final Answer using this EXACT structure:
 
 **Analysis:**
 [Contextual paragraph with insights]"""
-
-                    # Log prefix template to verify {dialect} placeholder exists
-                    if '{dialect}' in custom_prefix:
-                        logger.info(f"✅ Prefix contains {{dialect}} placeholder - LangChain will format it")
-                    else:
-                        logger.warning(f"⚠️ Prefix missing {{dialect}} placeholder!")
-
-                    logger.info(f"🔍 LangChain will replace {{dialect}} with: {toolkit.dialect}")
-
-                    # Create SQL agent with current config and exploration tools
-                    sql_agent = create_sql_agent(
-                        llm=self.llm,
-                        toolkit=toolkit,
-                        extra_tools=exploration_tools,  # Add custom exploration tools
-                        agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-                        verbose=True,
-                        handle_parsing_errors=handle_parsing_error,
-                        max_iterations=config['max_iterations'],
-                        max_execution_time=config['max_execution_time'],
-                        prefix=custom_prefix  # ✅ Direct parameter - LangChain formats {dialect}
-                        # DON'T override suffix - it contains {agent_scratchpad} variable
+                        }
                     )
 
                     # Execute agent
