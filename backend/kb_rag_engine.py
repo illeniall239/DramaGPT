@@ -35,23 +35,23 @@ logger = logging.getLogger(__name__)
 # SQL Agent Timeout Configurations
 TIMEOUT_CONFIGS = {
     'simple': {
+        'max_iterations': 10,
+        'max_execution_time': 60,  # 1 minute
+    },
+    'moderate': {
         'max_iterations': 15,
         'max_execution_time': 90,  # 1.5 minutes
     },
-    'moderate': {
-        'max_iterations': 25,
-        'max_execution_time': 150,  # 2.5 minutes
-    },
     'complex': {
-        'max_iterations': 35,
-        'max_execution_time': 240,  # 4 minutes
+        'max_iterations': 20,
+        'max_execution_time': 120,  # 2 minutes max (prevent 15-min timeouts)
     }
 }
 
 # Retry Configuration
 RETRY_CONFIG = {
-    'max_retries': 3,
-    'backoff_multiplier': 2,  # 2s, 4s, 8s
+    'max_retries': 2,  # Reduced to prevent 15-min Cloud Run timeouts
+    'backoff_multiplier': 2,  # 2s, 4s
 }
 
 
