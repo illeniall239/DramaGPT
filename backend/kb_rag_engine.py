@@ -554,36 +554,9 @@ class KnowledgeBaseRAG:
             complexity = self._classify_query_complexity(enhanced_query)
             logger.info(f"Query complexity: {complexity}")
 
-            # STRATEGY: Try DataFrame approach FIRST for most queries (more reliable)
-            # Only use SQL agent if DataFrame fails or for specific cases
-            use_dataframe_first = True  # Default to more reliable approach
-
-            logger.info(f"📊 Strategy: DataFrame-first approach (more reliable)")
-
-            # TRY DATAFRAME APPROACH FIRST
-            if use_dataframe_first:
-                logger.info(f"🐼 Trying DataFrame approach (primary method)...")
-                try:
-                    dataframe_result = self._query_with_dataframe(
-                        query=enhanced_query,
-                        table_name=all_table_names[0]
-                    )
-
-                    # If DataFrame succeeded, return immediately
-                    if dataframe_result.get('approach') == 'dataframe':
-                        logger.info("✅ DataFrame approach succeeded! Returning results.")
-                        dataframe_result['method'] = 'dataframe_primary'
-                        dataframe_result['tables_queried'] = [table_info['filename'] for table_info in tables_info]
-                        return dataframe_result
-                    else:
-                        # DataFrame failed, will try SQL agent as fallback
-                        logger.warning("⚠️ DataFrame approach failed, falling back to SQL agent...")
-
-                except Exception as df_error:
-                    logger.warning(f"⚠️ DataFrame approach error: {df_error}. Falling back to SQL agent...")
-
-            # FALLBACK: Use SQL agent only if DataFrame failed
-            logger.info(f"🔄 Falling back to SQL agent...")
+            # STRATEGY: Try SQL agent FIRST, DataFrame as fallback if it fails
+            logger.info(f"📊 Strategy: SQL agent first, DataFrame fallback if needed")
+            logger.info(f"🔄 Starting SQL agent query...")
 
             # Initialize variables for retry loop
             answer = ""
@@ -688,16 +661,23 @@ CRITICAL: Format your Final Answer using this EXACT structure:
                         table_name=all_table_names[0]
                     )
 
-                    # If DataFrame approach succeeded
-                    if fallback_result.get('approach') == 'dataframe':
-                        logger.info("✅ DataFrame fallback succeeded!")
+                    # Accept ANY result except 'failed' - even fallback summaries provide value
+                    fallback_approach = fallback_result.get('approach', 'failed')
+                    logger.info(f"DataFrame fallback returned: approach='{fallback_approach}'")
+
+                    if fallback_approach != 'failed':
+                        # DataFrame succeeded (code gen, fallback summary, or basic info - all valid)
+                        logger.info(f"✅ DataFrame fallback succeeded with '{fallback_approach}'!")
                         fallback_result['method'] = 'dataframe_fallback'
                         fallback_result['tables_queried'] = [table_info['filename'] for table_info in tables_info]
                         fallback_result['sql_agent_error'] = agent_error  # Keep original error for logging
                         return fallback_result
+                    else:
+                        logger.error("❌ DataFrame fallback returned 'failed' status")
 
                 except Exception as fallback_error:
-                    logger.error(f"❌ DataFrame fallback also failed: {fallback_error}")
+                    logger.error(f"❌ DataFrame fallback exception: {fallback_error}")
+                    logger.exception("Full traceback:")
 
                 # Both approaches failed
                 logger.error(f"❌ All approaches failed (SQL agent + DataFrame)")
@@ -1116,9 +1096,10 @@ Be specific about the columns they can query (like Director, GRPS, Theme, etc.).
 
             except Exception as e:
                 logger.error(f"❌ Even fallback summary failed: {e}")
+                # Still provide SOMETHING - never return 'failed' when we have basic info
                 return {
                     "response": f"I had trouble processing this query. The data has {len(df)} rows with these columns: {', '.join(list(df.columns)[:10])}...\n\nCould you rephrase? For example: 'Show me the top 3 directors by GRPS in 2024'",
-                    "approach": "failed",
+                    "approach": "basic_info",  # Changed from 'failed' - we ARE providing useful info
                     "error": error_feedback,
                     "code": generated_code
                 }
