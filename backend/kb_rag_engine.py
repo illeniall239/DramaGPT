@@ -361,6 +361,11 @@ class KnowledgeBaseRAG:
             db = SQLDatabase(engine, include_tables=all_table_names)  # Pass ALL tables
             toolkit = SQLDatabaseToolkit(db=db, llm=self.llm)
 
+            # Log detected SQL dialect for verification
+            detected_dialect = toolkit.dialect
+            logger.info(f"🔍 SQLDatabase detected dialect: {detected_dialect}")
+            logger.info(f"🔍 Database URL prefix: {db_url.split(':')[0] if db_url else 'N/A'}")
+
             # Step 4: Build enriched system message with column analysis
             table_descriptions = []
             for table_info in tables_info:
@@ -599,6 +604,14 @@ CRITICAL: Format your Final Answer using this EXACT structure:
 
 **Analysis:**
 [Contextual paragraph with insights]"""
+
+                    # Log prefix template to verify {dialect} placeholder exists
+                    if '{dialect}' in custom_prefix:
+                        logger.info(f"✅ Prefix contains {{dialect}} placeholder - LangChain will format it")
+                    else:
+                        logger.warning(f"⚠️ Prefix missing {{dialect}} placeholder!")
+
+                    logger.info(f"🔍 LangChain will replace {{dialect}} with: {toolkit.dialect}")
 
                     # Create SQL agent with current config and exploration tools
                     sql_agent = create_sql_agent(
