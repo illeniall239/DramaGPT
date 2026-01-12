@@ -235,8 +235,24 @@ class KnowledgeBaseRAG:
                 result = conn.execute(text(f'SELECT * FROM "{table_name}" LIMIT 1'))
                 columns = result.keys()
 
-                # Analyze each column
+                # Limit column analysis to prevent timeouts (max 30 columns or 60 seconds)
+                import time
+                start_time = time.time()
+                max_columns = 30  # Prevent analyzing 100+ columns
+                max_analysis_time = 60  # 60 second timeout for analysis
+
+                analyzed_count = 0
+
+                # Analyze each column (with limits)
                 for col in columns:
+                    # Stop if we've analyzed enough columns or taken too long
+                    if analyzed_count >= max_columns:
+                        logger.warning(f"⚠️ Reached max column limit ({max_columns}), skipping remaining columns")
+                        break
+
+                    if time.time() - start_time > max_analysis_time:
+                        logger.warning(f"⚠️ Column analysis timeout ({max_analysis_time}s), skipping remaining columns")
+                        break
                     try:
                         # Distinct count
                         distinct_count = conn.execute(
@@ -271,6 +287,8 @@ class KnowledgeBaseRAG:
                             'top_values': top_values,
                             'cardinality': cardinality
                         }
+
+                        analyzed_count += 1  # Increment counter after successful analysis
 
                     except Exception as e:
                         logger.warning(f"Failed to analyze column {col}: {e}")
