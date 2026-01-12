@@ -427,7 +427,14 @@ class KnowledgeBaseRAG:
 10. **FORMAT NUMBERS AS WHOLE INTEGERS - do not include decimal places in your responses**
     Example: Say "GRPS is 3159" NOT "GRPS is 3159.682"
 
-11. **TEXT PATTERN MATCHING STRATEGY:**
+10. **FORMAT NUMBERS AS WHOLE INTEGERS - do not include decimal places in your responses**
+    Example: Say "GRPS is 3159" NOT "GRPS is 3159.682"
+
+11. **DO NOT WRAP ACTION INPUTS IN MARKDOWN**:
+    - INCORRECT: ```sql SELECT * FROM table ```
+    - CORRECT: SELECT * FROM table
+
+12. **TEXT PATTERN MATCHING STRATEGY:**
 
     When filtering text columns, determine the matching strategy:
 
@@ -556,6 +563,8 @@ class KnowledgeBaseRAG:
                 logger.warning(f"⚠️ Parsing error encountered: {str(error)[:200]}")
                 return (
                     "OUTPUT FORMAT ERROR: Your previous response had formatting issues.\n\n"
+                    "IMPORTANT: Do NOT wrap your Action Input (SQL query) in markdown code blocks like ```sql ... ```.\n"
+                    "Pass the raw SQL query string directly.\n\n"
                     "Please provide your Final Answer using this structure:\n"
                     "Final Answer: [Complete answer to the user's question]\n\n"
                     "Make sure to:\n"
@@ -628,17 +637,23 @@ class KnowledgeBaseRAG:
                             "system_message": system_message,
                             "prefix": SQL_PREFIX + f"""
 
-CRITICAL: Format your Final Answer using this EXACT structure:
+IMPORTANT: You are a detailed Data Analyst.
+1. DO NOT give concise or one-word answers.
+2. DO NOT just list names or values.
+3. You MUST provide context, specific numbers, and analysis.
+
+CRITICAL: You MUST use this EXACT structure for your Final Answer:
 
 **Summary:**
-[Direct answer in 1-2 sentences]
+[Direct answer in 1-2 complete sentences]
 
-**Key Metrics:** (or Rankings/Comparison)
-- Point 1: [value] ([context])
-- Point 2: [value] ([context])
+**Key Metrics / Rankings:**
+- [Item 1]: [Value] ([Context])
+- [Item 2]: [Value] ([Context])
 
 **Analysis:**
-[Contextual paragraph with insights]"""
+[Paragraph explaining the trend, cause, or insight]
+"""
                         }
                     )
 
