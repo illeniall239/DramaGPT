@@ -140,13 +140,13 @@ Your task is to generate a SINGLE valid SQL query to answer the user's question.
             if not sql_query.upper().startswith("SELECT") and not sql_query.upper().startswith("WITH"):
                  return "Error: Only SELECT queries are allowed."
 
-            logger.info(f"⚡ Executing SQL: {{sql_query}}")
+            logger.info(f"⚡ Executing SQL: {sql_query}")
             result = db.run(sql_query)
             return result
             
         except Exception as e:
-            logger.error(f"❌ SQL Execution Failed: {{e}}")
-            return f"Error executing SQL: {{str(e)}}"
+            logger.error(f"❌ SQL Execution Failed: {e}")
+            return f"Error executing SQL: {str(e)}"
 
     def _synthesize_response(self, original_query: str, sql_query: str, sql_result: str) -> str:
         """
@@ -545,8 +545,8 @@ try:
 
     result = plt.gcf()
 except Exception as e:
-    print(f"Error: {{str(e)}}")
-    result = f"Error: {{str(e)}}"
+    print(f"Error: {str(e)}")
+    result = f"Error: {str(e)}"
 ```
 
 Generate ONLY the Python code with NO import statements."""
