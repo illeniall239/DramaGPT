@@ -138,9 +138,8 @@ export default function KBChatInterface({
                         finalContent = chunk.content || finalContent;
                         finalSources = chunk.sources || [];
                         finalVisualization = chunk.visualization || null;
-                    } else if (chunk.error) {
-                        throw new Error(chunk.error);
                     }
+                    // Note: chunk.error is now handled in streamQueryKnowledgeBase (api.ts)
                 }
             );
 

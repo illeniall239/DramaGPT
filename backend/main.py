@@ -82,6 +82,38 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 logger.info("✅ KB Standalone API initialized")
 
+@app.on_event("startup")
+async def validate_environment():
+    """Validate critical environment variables on startup."""
+    logger.info("🔍 Validating environment variables...")
+
+    missing = []
+    warnings = []
+
+    # Check critical environment variables
+    if not os.getenv('GOOGLE_API_KEY'):
+        missing.append('GOOGLE_API_KEY')
+
+    if not os.getenv('SUPABASE_DB_URL'):
+        warnings.append('SUPABASE_DB_URL')
+
+    if not os.getenv('SUPABASE_URL'):
+        warnings.append('SUPABASE_URL')
+
+    # Log results
+    if missing:
+        logger.error(f"❌ CRITICAL: Missing environment variables: {', '.join(missing)}")
+        logger.error("The application may not function correctly without these variables!")
+
+    if warnings:
+        logger.warning(f"⚠️ WARNING: Missing optional environment variables: {', '.join(warnings)}")
+        logger.warning("Some features (SQL Agent, Supabase integration) may not work correctly")
+
+    if not missing and not warnings:
+        logger.info("✅ All critical environment variables are configured")
+    elif not missing:
+        logger.info("✅ Critical environment variables are configured (some optional ones missing)")
+
 
 # ============================================================================
 # HEALTH CHECK ENDPOINT
@@ -89,8 +121,19 @@ logger.info("✅ KB Standalone API initialized")
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for monitoring and deployment platforms."""
-    return {"status": "healthy", "service": "KB Standalone API"}
+    """Health check endpoint with environment variable validation for monitoring and deployment platforms."""
+    env_status = {
+        "has_google_api_key": bool(os.getenv('GOOGLE_API_KEY')),
+        "has_supabase_db_url": bool(os.getenv('SUPABASE_DB_URL')),
+        "has_supabase_url": bool(os.getenv('SUPABASE_URL')),
+        "has_supabase_service_key": bool(os.getenv('SUPABASE_SERVICE_ROLE_KEY'))
+    }
+
+    return {
+        "status": "healthy",
+        "service": "KB Standalone API",
+        "environment": env_status
+    }
 
 
 # ============================================================================

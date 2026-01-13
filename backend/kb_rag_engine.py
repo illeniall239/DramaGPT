@@ -35,22 +35,22 @@ logger = logging.getLogger(__name__)
 # SQL Agent Timeout Configurations
 TIMEOUT_CONFIGS = {
     'simple': {
-        'max_iterations': 10,
-        'max_execution_time': 60,  # 1 minute
+        'max_iterations': 15,  # Increased from 10 for better response formatting
+        'max_execution_time': 90,  # Increased from 60s
     },
     'moderate': {
-        'max_iterations': 15,
-        'max_execution_time': 90,  # 1.5 minutes
+        'max_iterations': 25,  # Increased from 15 for detailed analysis
+        'max_execution_time': 120,  # Increased from 90s (2 minutes)
     },
     'complex': {
-        'max_iterations': 20,
-        'max_execution_time': 120,  # 2 minutes max (prevent 15-min timeouts)
+        'max_iterations': 30,  # Increased from 20 to allow complete response generation
+        'max_execution_time': 180,  # Increased from 120s (3 minutes, still under Cloud Run 300s limit)
     }
 }
 
 # Retry Configuration
 RETRY_CONFIG = {
-    'max_retries': 2,  # Reduced to prevent 15-min Cloud Run timeouts
+    'max_retries': 2,  # Keep at 2 to prevent excessive Cloud Run timeouts
     'backoff_multiplier': 2,  # 2s, 4s
 }
 
@@ -104,6 +104,37 @@ class KnowledgeBaseRAG:
         cleaned = re.sub(pattern, r'\1', response)
 
         return cleaned
+
+    def _validate_response_format(self, response: str) -> tuple[bool, str]:
+        """
+        Validate that response follows the required structured format.
+        Returns (is_valid, feedback_message)
+        """
+        has_summary = "**Summary:**" in response or "**summary:**" in response.lower()
+        has_metrics = ("**Key Metrics:**" in response or
+                       "**Rankings:**" in response or
+                       "**Comparison:**" in response or
+                       "key metrics:" in response.lower() or
+                       "rankings:" in response.lower())
+        has_analysis = "**Analysis:**" in response or "**analysis:**" in response.lower()
+
+        if not (has_summary and has_metrics and has_analysis):
+            missing = []
+            if not has_summary:
+                missing.append("Summary")
+            if not has_metrics:
+                missing.append("Key Metrics/Rankings")
+            if not has_analysis:
+                missing.append("Analysis")
+
+            feedback = f"⚠️ Response missing required sections: {', '.join(missing)}. Please reformat with all sections."
+            return False, feedback
+
+        # Check if response is suspiciously short (< 150 characters = likely incomplete)
+        if len(response) < 150:
+            return False, "⚠️ Response appears too brief. Please provide detailed analysis."
+
+        return True, ""
 
     def _classify_error_type(self, error: Exception) -> Dict[str, Any]:
         """
@@ -369,8 +400,10 @@ class KnowledgeBaseRAG:
             # Get Postgres connection from environment
             db_url = os.getenv('SUPABASE_DB_URL')
             if not db_url:
+                error_msg = 'SUPABASE_DB_URL not configured'
+                logger.error(f"❌ {error_msg} - Cannot create SQL agent. Please configure SUPABASE_DB_URL environment variable.")
                 return {
-                    'error': 'SUPABASE_DB_URL not configured',
+                    'error': error_msg,
                     'response': 'Database connection not configured. Please check server settings.'
                 }
 
@@ -495,27 +528,30 @@ class KnowledgeBaseRAG:
     - Choose the column that best matches the user's intent
     - This works for ANY dataset - no hardcoded domain knowledge needed
 
-13. **Response Formatting - ALWAYS Use This Structured Template:**
+13. **MANDATORY RESPONSE FORMAT - THIS IS CRITICAL:**
 
-    You MUST format ALL responses using this exact structure:
+    Your Final Answer MUST use this EXACT structure. DO NOT deviate from this format:
 
     **Summary:**
-    [1-2 sentence direct answer to the query]
+    [Provide a direct 1-2 sentence answer to the user's question with key numbers]
 
-    **Key Metrics:** (or **Rankings:** for lists, **Comparison:** for comparisons)
-    - Point 1: [value] ([context if relevant])
-    - Point 2: [value] ([context if relevant])
-    - Point 3+: [additional metrics as needed]
+    **Key Metrics:** (or use **Rankings:** for top/bottom lists, **Comparison:** for comparisons)
+    - [Item/Metric 1]: [Specific Value] ([Brief context])
+    - [Item/Metric 2]: [Specific Value] ([Brief context])
+    - [Item/Metric 3]: [Specific Value] ([Brief context])
+    [Add more metrics as relevant - aim for 3-5 key points]
 
     **Analysis:**
-    [Contextual paragraph providing trends, comparisons, insights, or additional context]
+    [Provide 2-3 sentences of context: What does this data tell us? Are there trends, patterns, or notable insights? Compare values if relevant.]
+
+    ⚠️ CRITICAL: If you provide a response without this structure, it will be considered INCORRECT.
 
     **Formatting Rules:**
     - Use **bold** for section headers (Summary, Key Metrics, Analysis, etc.)
     - Use bullet points (- ) for all metrics and data points
     - Include context in parentheses where helpful
-    - Keep Summary to 1-2 sentences maximum
-    - Make Analysis insightful with comparisons or trends
+    - Keep Summary to 1-2 sentences maximum with specific numbers
+    - Make Analysis insightful with comparisons, trends, or patterns (2-3 sentences minimum)
 
     **CORRECT Examples:**
 
@@ -577,17 +613,30 @@ class KnowledgeBaseRAG:
             # Define custom error handler for parsing errors
             def handle_parsing_error(error) -> str:
                 """Handle parsing errors by returning a helpful message to the agent."""
-                logger.warning(f"⚠️ Parsing error encountered: {str(error)[:200]}")
+                error_str = str(error)
+                logger.warning(f"⚠️ Parsing error encountered: {error_str[:200]}")
+
+                # Check if it's a markdown wrapping issue
+                if "```sql" in error_str or "```" in error_str:
+                    return (
+                        "OUTPUT FORMAT ERROR: You wrapped your SQL query in markdown code blocks.\n\n"
+                        "❌ INCORRECT: ```sql SELECT * FROM table ```\n"
+                        "✅ CORRECT: SELECT * FROM table\n\n"
+                        "Please retry WITHOUT markdown code blocks.\n"
+                        "Pass the raw SQL query string directly as Action Input."
+                    )
+
+                # Generic parsing error
                 return (
-                    "OUTPUT FORMAT ERROR: Your previous response had formatting issues.\n\n"
-                    "IMPORTANT: Do NOT wrap your Action Input (SQL query) in markdown code blocks like ```sql ... ```.\n"
-                    "Pass the raw SQL query string directly.\n\n"
-                    "Please provide your Final Answer using this structure:\n"
-                    "Final Answer: [Complete answer to the user's question]\n\n"
-                    "Make sure to:\n"
-                    "1. Start with 'Final Answer:'\n"
-                    "2. Include all relevant data and metrics\n"
-                    "3. Use the structured format (Summary, Key Metrics, Analysis)"
+                    "OUTPUT FORMAT ERROR: Your previous action format was incorrect.\n\n"
+                    "Required format:\n"
+                    "Action: [tool name]\n"
+                    "Action Input: [raw input without markdown or extra formatting]\n\n"
+                    "Please retry with correct formatting.\n\n"
+                    "REMINDER: Your Final Answer must use the structured format:\n"
+                    "**Summary:** [answer]\n"
+                    "**Key Metrics:** [bullets]\n"
+                    "**Analysis:** [context]"
                 )
 
             # Step 4: Check if visualization is requested
@@ -662,14 +711,19 @@ IMPORTANT: You are a detailed Data Analyst.
 CRITICAL: You MUST use this EXACT structure for your Final Answer:
 
 **Summary:**
-[Direct answer in 1-2 complete sentences]
+[Direct answer in 1-2 complete sentences with key numbers]
 
 **Key Metrics / Rankings:**
 - [Item 1]: [Value] ([Context])
 - [Item 2]: [Value] ([Context])
+- [Item 3]: [Value] ([Context])
 
 **Analysis:**
-[Paragraph explaining the trend, cause, or insight]
+[2-3 sentences explaining the trend, cause, or insight. Compare values if relevant.]
+
+⚠️ REMINDER: After executing SQL queries, allocate time to format a COMPLETE Final Answer.
+Do NOT stop after just retrieving the data - you must format it properly with ALL three sections.
+The response MUST have Summary, Key Metrics/Rankings, AND Analysis sections.
 """
                         }
                     )
@@ -678,6 +732,14 @@ CRITICAL: You MUST use this EXACT structure for your Final Answer:
                     result = sql_agent.invoke({"input": enhanced_query})
                     answer = result.get("output", "")
                     answer = self._remove_decimals_from_response(answer)
+
+                    # Validate response format
+                    is_valid, feedback = self._validate_response_format(answer)
+                    if not is_valid:
+                        logger.warning(f"Response format validation failed: {feedback}")
+                        logger.warning(f"Original response length: {len(answer)} characters")
+                        # Don't reject the response, just log the issue for monitoring
+
                     intermediate_steps = result.get("intermediate_steps", [])
 
                     # Extract SQL queries from intermediate steps
@@ -765,6 +827,24 @@ CRITICAL: You MUST use this EXACT structure for your Final Answer:
                             tables_used.append(table_info['filename'])
 
             logger.info(f"📊 Tables queried: {', '.join(tables_used) if tables_used else 'none detected'}")
+
+            # Log response quality metrics for monitoring
+            response_length = len(answer)
+            has_structure = ("**Summary:**" in answer and
+                             ("**Key Metrics:**" in answer or "**Rankings:**" in answer or "**Comparison:**" in answer) and
+                             "**Analysis:**" in answer)
+            num_iterations = len(intermediate_steps) if intermediate_steps else 0
+
+            logger.info(f"📊 Response Quality Metrics:")
+            logger.info(f"  - Length: {response_length} characters")
+            logger.info(f"  - Has structured format: {has_structure}")
+            logger.info(f"  - Iterations used: {num_iterations}/{config['max_iterations']}")
+            logger.info(f"  - Query complexity: {complexity}")
+
+            if not has_structure:
+                logger.warning(f"⚠️ Response missing structured format despite prompt instructions")
+            if response_length < 150:
+                logger.warning(f"⚠️ Response unusually short (< 150 chars)")
 
             # Build response (no visualization in SQL agent branch)
             response_dict = {

@@ -181,10 +181,20 @@ export async function streamQueryKnowledgeBase(
                     const jsonStr = line.replace('data: ', '').trim();
                     if (jsonStr) {
                         const data = JSON.parse(jsonStr);
+                        // If the data contains an error, throw it to be caught by the caller
+                        if (data.error) {
+                            throw new Error(data.error);
+                        }
                         onChunk?.(data);
                     }
                 } catch (e) {
-                    console.error('Error parsing SSE line:', e);
+                    // Re-throw errors so they can be handled by the caller
+                    // Only log and continue for JSON parse errors
+                    if (e instanceof SyntaxError) {
+                        console.error('Error parsing SSE JSON:', e);
+                    } else {
+                        throw e;
+                    }
                 }
             }
         }
