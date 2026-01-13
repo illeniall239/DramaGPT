@@ -198,7 +198,6 @@ class KnowledgeBaseRAG:
         else:
             return 'complex'
 
-    @lru_cache(maxsize=100)
     def _analyze_table_columns(self, db_url: str, table_name: str) -> Dict[str, Any]:
         """
         Pre-analyze table columns for intelligent querying.
