@@ -89,11 +89,11 @@ class KnowledgeBaseRAG:
 Your task is to generate a SINGLE valid SQL query to answer the user's question.
 
 **Schema Information:**
-{{tables_desc}}
+{tables_desc}
 
 **Context:**
-{{conversation_context}}
-{{temporal_context}}
+{conversation_context}
+{temporal_context}
 
 **CRITICAL RULES:**
 1. **Output ONLY the raw SQL query**. Do not use markdown, code blocks, or explanations.
@@ -169,9 +169,9 @@ Transform the provided raw SQL data into a clear, structured insight.
 - If the result is empty, clearly state that no data was found.
 """
         user_content = f"""
-User Question: {{original_query}}
-Executed SQL: {{sql_query}}
-Raw Data Result: {{sql_result}}
+User Question: {original_query}
+Executed SQL: {sql_query}
+Raw Data Result: {sql_result}
 
 Provide the structured analysis.
 """
