@@ -21,38 +21,11 @@ from typing import Dict, List, Optional, Any
 import numpy as np  # Keep for type hints in old RAG methods
 from sqlalchemy import create_engine, text
 from langchain_community.utilities import SQLDatabase
-from langchain_community.agent_toolkits import SQLDatabaseToolkit, create_sql_agent
-from langchain_community.agent_toolkits.sql.prompt import SQL_PREFIX
-from langchain.agents import AgentType
-from sql_agent_tools import create_sql_exploration_tools
-
 # Note: Vector search imports removed (sentence_transformers, sklearn, qdrant_manager)
 # SQL agent mode only - numpy kept for type hints only
 
 # Setup logging
 logger = logging.getLogger(__name__)
-
-# SQL Agent Timeout Configurations
-TIMEOUT_CONFIGS = {
-    'simple': {
-        'max_iterations': 15,  # Increased from 10 for better response formatting
-        'max_execution_time': 90,  # Increased from 60s
-    },
-    'moderate': {
-        'max_iterations': 25,  # Increased from 15 for detailed analysis
-        'max_execution_time': 120,  # Increased from 90s (2 minutes)
-    },
-    'complex': {
-        'max_iterations': 30,  # Increased from 20 to allow complete response generation
-        'max_execution_time': 180,  # Increased from 120s (3 minutes, still under Cloud Run 300s limit)
-    }
-}
-
-# Retry Configuration
-RETRY_CONFIG = {
-    'max_retries': 2,  # Keep at 2 to prevent excessive Cloud Run timeouts
-    'backoff_multiplier': 2,  # 2s, 4s
-}
 
 
 class KnowledgeBaseRAG:
@@ -78,72 +51,12 @@ class KnowledgeBaseRAG:
         """
         logger.info(f"Initializing KnowledgeBaseRAG with SQL agent")
 
-        # Wrap LLM with markdown stripping to prevent parsing errors
-        self.llm = self._create_markdown_stripping_llm(llm)
+        self.llm = llm
         self.supabase = supabase_client
+        self._column_cache = {}  # Cache for table column analysis
 
         logger.info("✅ KB engine ready (SQL agent mode)")
 
-    def _create_markdown_stripping_llm(self, base_llm):
-        """
-        Create a wrapper around the LLM that strips markdown code blocks from outputs.
-        This prevents parsing errors when LLM wraps SQL queries in ```sql or ````tool_code blocks.
-        """
-        from langchain.schema import BaseMessage, AIMessage
-        import re
-
-        class MarkdownStrippingLLM:
-            def __init__(self, llm):
-                self.llm = llm
-                # Copy all attributes from base LLM
-                for attr in dir(llm):
-                    if not attr.startswith('_') and attr not in ['invoke', 'generate', 'predict']:
-                        try:
-                            setattr(self, attr, getattr(llm, attr))
-                        except:
-                            pass
-
-            def _strip_markdown(self, text: str) -> str:
-                """Strip markdown code blocks from text."""
-                # Remove ```sql ... ``` blocks
-                text = re.sub(r'```sql\s*(.*?)\s*```', r'\1', text, flags=re.DOTALL)
-                # Remove ``` ... ``` blocks
-                text = re.sub(r'```\w*\s*(.*?)\s*```', r'\1', text, flags=re.DOTALL)
-                # Remove ````tool_code ... ```` blocks (4 backticks)
-                text = re.sub(r'````\w*\s*(.*?)\s*````', r'\1', text, flags=re.DOTALL)
-                return text.strip()
-
-            def invoke(self, *args, **kwargs):
-                """Invoke LLM and strip markdown from response."""
-                result = self.llm.invoke(*args, **kwargs)
-                if hasattr(result, 'content'):
-                    result.content = self._strip_markdown(result.content)
-                return result
-
-            def generate(self, *args, **kwargs):
-                """Generate and strip markdown from response."""
-                result = self.llm.generate(*args, **kwargs)
-                # Strip markdown from all generations
-                for generations in result.generations:
-                    for gen in generations:
-                        if hasattr(gen, 'text'):
-                            gen.text = self._strip_markdown(gen.text)
-                        if hasattr(gen, 'message') and hasattr(gen.message, 'content'):
-                            gen.message.content = self._strip_markdown(gen.message.content)
-                return result
-
-            def predict(self, *args, **kwargs):
-                """Predict and strip markdown from response."""
-                result = self.llm.predict(*args, **kwargs)
-                if isinstance(result, str):
-                    return self._strip_markdown(result)
-                return result
-
-            def __getattr__(self, name):
-                """Proxy all other attributes to base LLM."""
-                return getattr(self.llm, name)
-
-        return MarkdownStrippingLLM(base_llm)
 
     def _remove_decimals_from_response(self, response: str) -> str:
         """
@@ -167,149 +80,121 @@ class KnowledgeBaseRAG:
 
         return cleaned
 
-    def _validate_response_format(self, response: str) -> tuple[bool, str]:
+    def _generate_sql_plan(self, query: str, tables_desc: str, conversation_context: str, temporal_context: str) -> str:
         """
-        Validate that response follows the required structured format.
-        Returns (is_valid, feedback_message)
+        Stage 1: SQL Planner
+        Uses LLM to generate a valid SQL query string from natural language.
         """
-        has_summary = "**Summary:**" in response or "**summary:**" in response.lower()
-        has_metrics = ("**Key Metrics:**" in response or
-                       "**Rankings:**" in response or
-                       "**Comparison:**" in response or
-                       "key metrics:" in response.lower() or
-                       "rankings:" in response.lower())
-        has_analysis = "**Analysis:**" in response or "**analysis:**" in response.lower()
+        system_prompt = f"""You are a PostgreSQL expert query planner.
+Your task is to generate a SINGLE valid SQL query to answer the user's question.
 
-        if not (has_summary and has_metrics and has_analysis):
-            missing = []
-            if not has_summary:
-                missing.append("Summary")
-            if not has_metrics:
-                missing.append("Key Metrics/Rankings")
-            if not has_analysis:
-                missing.append("Analysis")
+**Schema Information:**
+{{tables_desc}}
 
-            feedback = f"⚠️ Response missing required sections: {', '.join(missing)}. Please reformat with all sections."
-            return False, feedback
+**Context:**
+{{conversation_context}}
+{{temporal_context}}
 
-        # Check if response is suspiciously short (< 150 characters = likely incomplete)
-        if len(response) < 150:
-            return False, "⚠️ Response appears too brief. Please provide detailed analysis."
+**CRITICAL RULES:**
+1. **Output ONLY the raw SQL query**. Do not use markdown, code blocks, or explanations.
+2. **Dialect**: Use standard PostgreSQL.
+   - **Identifiers**: You MUST double-quote ALL identifiers e.g. "Director", "Theme".
+   - **Dates**: Use `EXTRACT(YEAR FROM "Date")` or `to_char("Date", 'YYYY')` for year comparisons.
+   - **Relative Dates**: If the **Context** provides a "Date context" (e.g., "last 3 years = 2023 to 2026"), use the explicit years provided in the hint (e.g. `WHERE "Year" >= 2023` or `WHERE EXTRACT(YEAR FROM "Date") >= 2023`).
+3. **Reasoning**:
+   - **Thematic Matching (Slashed Columns)**: Columns like "Theme" often contain multiple values separated by slashes (e.g., "Crime/Thriller/Action").
+     - To find "Crime Thrillers", search for *both* terms: `WHERE "Theme" ILIKE '%Crime%' AND "Theme" ILIKE '%Thriller%'`.
+     - To find "Crime" specifically: `WHERE "Theme" ILIKE '%Crime%'`.
+     - Always use `%word%` to ensure you match the term even if it's in the middle of a slash-separated list.
+   - **Flexibility**: If a query mentions multiple genres (e.g. "Crime, Action and Drama"), use `OR` if the user implies "any", but stick to `AND` if they specify a specific sub-genre like "Crime Thriller".
+   - **Contextual Selection**: Even if the query asks for a metric (e.g. "top directors"), ALWAYS select 2-3 extra context columns (e.g. "Drama", "Channel", "Theme", "Year") to allow for a richer final response.
+4. **Limits**: Always limit result sets to 10 rows unless asked for more.
+5. **Select Metrics**: Always SELECT the metric column used for sorting or aggregation.
+"""
+        from langchain.schema import HumanMessage, SystemMessage
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=query)
+        ]
+        
+        response = self.llm.invoke(messages)
+        sql = response.content.strip()
+        
+        # Post-processing cleanup
+        import re
+        sql = re.sub(r'```sql\s*', '', sql)
+        sql = re.sub(r'```', '', sql)
+        return sql.strip()
 
-        return True, ""
-
-    def _classify_error_type(self, error: Exception) -> Dict[str, Any]:
+    def _execute_sql_query(self, db, sql_query: str) -> str:
         """
-        Classify error to determine retry strategy.
-
-        Returns dict with:
-        - error_type: 'timeout' | 'parsing' | 'database' | 'rate_limit' | 'other'
-        - should_retry: bool
-        - wait_seconds: int (for backoff)
-        - user_message: str
+        Stage 2: SQL Executor
+        Executes the SQL query deterministically against the database.
         """
-        error_str = str(error).lower()
+        try:
+            # Basic validation
+            if not sql_query:
+                return "Error: Empty query generated"
+            
+            # Allow only SELECT statements for read-only safety
+            if not sql_query.upper().startswith("SELECT") and not sql_query.upper().startswith("WITH"):
+                 return "Error: Only SELECT queries are allowed."
 
-        # Timeout errors
-        if any(pattern in error_str for pattern in [
-            'iteration limit', 'time limit', 'timed out', 'timeout'
-        ]):
-            return {
-                'error_type': 'timeout',
-                'should_retry': True,
-                'wait_seconds': 0,
-                'user_message': 'Query taking longer than expected, retrying with extended timeout...'
-            }
+            logger.info(f"⚡ Executing SQL: {{sql_query}}")
+            result = db.run(sql_query)
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ SQL Execution Failed: {{e}}")
+            return f"Error executing SQL: {{str(e)}}"
 
-        # Parsing errors
-        if any(pattern in error_str for pattern in [
-            'could not parse', 'parsing error', 'invalid format'
-        ]):
-            return {
-                'error_type': 'parsing',
-                'should_retry': True,
-                'wait_seconds': 2,
-                'user_message': 'Reformatting query, please wait...'
-            }
-
-        # Rate limit errors (don't retry to save quota)
-        if any(pattern in error_str for pattern in [
-            'rate limit', '429', 'too many requests', 'quota'
-        ]):
-            return {
-                'error_type': 'rate_limit',
-                'should_retry': False,
-                'wait_seconds': 30,
-                'user_message': 'API rate limit or quota reached. Please wait a moment or check your Gemini API plan.'
-            }
-
-        # Database errors (don't retry)
-        if any(pattern in error_str for pattern in [
-            'syntax error', 'does not exist', 'permission denied'
-        ]):
-            return {
-                'error_type': 'database',
-                'should_retry': False,
-                'wait_seconds': 0,
-                'user_message': 'Database query error'
-            }
-
-        # Other errors
-        return {
-            'error_type': 'other',
-            'should_retry': True,
-            'wait_seconds': 2,
-            'user_message': 'Unexpected error, retrying...'
-        }
-
-    def _classify_query_complexity(self, query: str) -> str:
+    def _synthesize_response(self, original_query: str, sql_query: str, sql_result: str) -> str:
         """
-        Analyze query to determine timeout configuration.
-
-        Returns: 'simple' | 'moderate' | 'complex'
+        Stage 3: Data Analyst
+        Synthesizes the SQL results into a structured natural language response.
         """
-        complexity_score = 0
-        query_upper = query.upper()
+        system_prompt = """You are a detailed Data Analyst.
+Transform the provided raw SQL data into a clear, structured insight.
 
-        # Indicators of complexity
-        if 'JOIN' in query_upper:
-            complexity_score += 2
-        if 'GROUP BY' in query_upper:
-            complexity_score += 1
-        if 'HAVING' in query_upper:
-            complexity_score += 2
-        if query_upper.count('SELECT') > 1:  # Subqueries
-            complexity_score += 3
-        if any(word in query for word in ['last', 'previous', 'year', 'month']):
-            complexity_score += 1  # Temporal queries need more reasoning
+**Response Requirements:**
+1. **Natural, Professional Style**: Write a clear, comprehensive, and **info-rich** answer in normal paragraphs. Do NOT use strict section headers.
+2. **Deep Contextual Analysis**: Don't just give the answer. Use the extra columns provided (Drama, Channel, Year, etc.) to explain the "background" of the results. 
+   - Good: "Director X is the top performer with 500 GRPs, primarily driven by the hit drama 'Y' on [Channel] in 2024."
+3. **Data Integrity**: **ALWAYS** include the specific numerical values from the raw data.
+4. **Completeness**: Synthesize all relevant data points into a cohesive narrative.
 
-        # Classify
-        if complexity_score <= 2:
-            return 'simple'
-        elif complexity_score <= 5:
-            return 'moderate'
-        else:
-            return 'complex'
+**Rules:**
+- Do not mention "the query result says". Just present the facts naturally.
+- Focus on providing **maximum detail** from the provided rows.
+- If the result is empty, clearly state that no data was found.
+"""
+        user_content = f"""
+User Question: {{original_query}}
+Executed SQL: {{sql_query}}
+Raw Data Result: {{sql_result}}
+
+Provide the structured analysis.
+"""
+        from langchain.schema import HumanMessage, SystemMessage
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_content)
+        ]
+        
+        response = self.llm.invoke(messages)
+        return response.content.strip()
 
     def _analyze_table_columns(self, db_url: str, table_name: str) -> Dict[str, Any]:
         """
         Pre-analyze table columns for intelligent querying.
         Returns metadata: distinct counts, cardinality, top values.
-
-        This enables the SQL agent to make intelligent column selection decisions
-        without hardcoded domain knowledge.
-
-        Args:
-            db_url: Database connection URL
-            table_name: Name of table to analyze
-
-        Returns:
-            Dict mapping column names to metadata:
-                - distinct_count: Number of unique values
-                - top_values: List of most common values
-                - cardinality: 'unique' | 'high' | 'medium' | 'low'
         """
         try:
+            # Check cache first
+            if table_name in self._column_cache:
+                logger.debug(f"⚡ Using cached analysis for table: {table_name}")
+                return self._column_cache[table_name]
+
             engine = create_engine(db_url)
             column_metadata = {}
 
@@ -327,24 +212,8 @@ class KnowledgeBaseRAG:
                 result = conn.execute(text(f'SELECT * FROM "{table_name}" LIMIT 1'))
                 columns = result.keys()
 
-                # Limit column analysis to prevent timeouts (max 30 columns or 60 seconds)
-                import time
-                start_time = time.time()
-                max_columns = 30  # Prevent analyzing 100+ columns
-                max_analysis_time = 60  # 60 second timeout for analysis
-
-                analyzed_count = 0
-
-                # Analyze each column (with limits)
+                # Analyze ALL columns (no limits)
                 for col in columns:
-                    # Stop if we've analyzed enough columns or taken too long
-                    if analyzed_count >= max_columns:
-                        logger.warning(f"⚠️ Reached max column limit ({max_columns}), skipping remaining columns")
-                        break
-
-                    if time.time() - start_time > max_analysis_time:
-                        logger.warning(f"⚠️ Column analysis timeout ({max_analysis_time}s), skipping remaining columns")
-                        break
                     try:
                         # Distinct count
                         distinct_count = conn.execute(
@@ -379,16 +248,19 @@ class KnowledgeBaseRAG:
                             'top_values': top_values,
                             'cardinality': cardinality
                         }
-
-                        analyzed_count += 1  # Increment counter after successful analysis
-
                     except Exception as e:
                         logger.warning(f"Failed to analyze column {col}: {e}")
-                        # Continue with other columns
                         continue
 
             logger.info(f"✅ Analyzed {len(column_metadata)} columns in {table_name}")
+            
+            # Store in cache
+            self._column_cache[table_name] = column_metadata
             return column_metadata
+
+        except Exception as e:
+            logger.error(f"❌ Failed to analyze table columns: {e}")
+            return {}
 
         except Exception as e:
             logger.error(f"❌ Failed to analyze table columns: {e}")
@@ -455,270 +327,48 @@ class KnowledgeBaseRAG:
 
             logger.info(f"📊 Found {len(tables_info)} table(s) in KB")
 
-            # Step 3: Create SQL agent with ALL tables
+            # Step 3: Initialize SQL Database Connection
             all_table_names = [t['table_name'] for t in tables_info]
-            logger.info(f"📊 Creating SQL agent with {len(all_table_names)} table(s): {', '.join(all_table_names)}")
-
-            # Get Postgres connection from environment
             db_url = os.getenv('SUPABASE_DB_URL')
             if not db_url:
-                error_msg = 'SUPABASE_DB_URL not configured'
-                logger.error(f"❌ {error_msg} - Cannot create SQL agent. Please configure SUPABASE_DB_URL environment variable.")
-                return {
-                    'error': error_msg,
-                    'response': 'Database connection not configured. Please check server settings.'
-                }
+                return {'error': 'DB URL missing', 'response': 'Database connection not configured.'}
 
             engine = create_engine(db_url)
-            db = SQLDatabase(engine, include_tables=all_table_names)  # Pass ALL tables
-            toolkit = SQLDatabaseToolkit(db=db, llm=self.llm)
+            db = SQLDatabase(engine, include_tables=all_table_names)
 
             # Step 4: Build enriched system message with column analysis
             table_descriptions = []
             for table_info in tables_info:
                 table_name = table_info['table_name']
-
-                # Pre-analyze columns for intelligent querying
-                logger.info(f"Analyzing columns for table: {table_name}")
                 col_metadata = self._analyze_table_columns(db_url, table_name)
 
-                # Build enriched description
                 desc = f"**{table_name}** (from {table_info['filename']})\n"
                 desc += f"  Rows: {table_info['row_count']}\n"
                 desc += "  Columns:\n"
 
-                # Add detailed column info with distinct counts and samples
                 for col, meta in col_metadata.items():
                     distinct = meta.get('distinct_count', 0)
                     cardinality = meta.get('cardinality', 'unknown')
                     top_values = meta.get('top_values', [])
-
-                    # Format sample values
                     sample_str = ', '.join([f'"{v}"' for v in top_values[:3]])
-
                     desc += f'    - "{col}": {distinct} distinct ({cardinality})'
                     if sample_str:
                         desc += f' - e.g., {sample_str}'
                     desc += '\n'
-
                 table_descriptions.append(desc)
 
             tables_desc = '\n'.join(table_descriptions)
 
-            # Step 4a: Rewrite vague follow-up queries using conversation context
-            # This expands "tell me more about it" → "tell me more about Meri Zaat Zarra-e-Benishan"
+            # Step 5: Format Contexts
             rewritten_query = self._rewrite_query_with_context(query, conversation_history)
-            
-            # PART B: Preprocess query to add date hints
             enhanced_query = self._enhance_time_based_query(rewritten_query)
-            logger.info(f"Enhanced query: {enhanced_query}")
-
-            # Format conversation context for pronoun resolution
             conversation_context = self._format_conversation_context(conversation_history)
-
-            # PART A: Format temporal context for system prompt
             temporal_context = self._format_temporal_context(tables_info)
 
-            system_message = f"""You are a SQL expert assistant analyzing structured data.
-
-**Available Tables in Database:**
-{tables_desc}
-{conversation_context}
-{temporal_context}
-
-**CRITICAL INSTRUCTIONS:**
-1. You have access to {len(tables_info)} table(s) - analyze the question to determine which to use
-2. Column names may contain spaces - use double quotes: "Column Name"
-3. Table names are already lowercase - use them as-is
-4. For "top N" queries: ORDER BY [metric] DESC LIMIT N
-5. For "bottom N" queries: ORDER BY [metric] ASC LIMIT N
-6. You can JOIN tables if the question requires data from multiple files
-7. Be precise - return exact numbers, not approximations
-8. Provide clear, complete answers with data
-9. **Resolve pronouns and references using conversation context above**
-10. **FORMAT NUMBERS AS WHOLE INTEGERS - do not include decimal places in your responses**
-    Example: Say "GRPS is 3159" NOT "GRPS is 3159.682"
-
-10. **FORMAT NUMBERS AS WHOLE INTEGERS - do not include decimal places in your responses**
-    Example: Say "GRPS is 3159" NOT "GRPS is 3159.682"
-
-11. **❌ CRITICAL: NEVER WRAP SQL QUERIES IN MARKDOWN CODE BLOCKS ❌**:
-    When using the sql_db_query tool, provide the BARE SQL query string without any formatting:
-
-    ❌ INCORRECT FORMATS (DO NOT USE):
-    - ```sql SELECT * FROM table```
-    - ```SELECT * FROM table```
-    - ````tool_code SELECT * FROM table````
-    - ````SELECT * FROM table````
-    - Any variation with backticks (`, ``, ```, ````)
-
-    ✅ CORRECT FORMAT (ALWAYS USE THIS):
-    - SELECT * FROM table
-    - Just the raw SQL query text, no wrapping, no backticks, no code blocks
-
-    This is CRITICAL: Wrapping in markdown will cause parsing errors and query failure.
-
-12. **TEXT PATTERN MATCHING STRATEGY:**
-
-    When filtering text columns, determine the matching strategy:
-
-    **Use LIKE with wildcards** when:
-    - Column contains slash-separated values (e.g., "Crime/Thriller", "Love/Romance/Drama")
-    - Searching for partial matches or keywords
-    - User query mentions categories/themes that might appear combined
-
-    Examples:
-    - Column value: "Crime/Thriller/Mystery"
-    - User asks: "crime dramas"
-    - Query: WHERE LOWER("Theme") LIKE '%crime%'
-
-    **Use exact match (=)** when:
-    - Column contains single discrete values
-    - User specifies exact name (e.g., specific actor, drama title)
-    - Matching unique identifiers
-
-    **IMPORTANT**: When you see sample values with slashes (/) in the schema,
-    ALWAYS use LIKE for filtering that column. Example:
-    - Schema shows: Theme: "Crime/Thriller", "Love/Romance", "Drama/Family"
-    - For "crime" queries: WHERE LOWER("Theme") LIKE '%crime%'
-    - For "romance" queries: WHERE LOWER("Theme") LIKE '%romance%'
-
-12. **UNIVERSAL Column Selection Strategy:**
-    - The schema above shows DISTINCT COUNTS and CARDINALITY for each column
-    - High distinct count (e.g., 42) = likely contains varied categorical data (good for filtering)
-    - Low distinct count (e.g., 1) = probably not useful for filtering (all rows have same value)
-    - Use the SAMPLE VALUES to understand what each column contains
-    - If multiple columns could match the query, use sql_db_distinct_values tool to inspect actual values
-
-    **Example Decision Process:**
-    - User asks: "top crime dramas"
-    - Schema shows: "Genre" (1 distinct, "Serial"), "Theme" (42 distinct, e.g., "Crime/Thriller", "Romance")
-    - Decision: "Genre" has only 1 value → not useful. "Theme" has 42 values including crime-related → use Theme
-    - Query: WHERE "Theme" LIKE '%Crime%'
-
-    **When Ambiguous:**
-    - If unsure which column to use, call sql_db_distinct_values(table_name, column_name, limit=10)
-    - Inspect the actual values returned
-    - Choose the column that best matches the user's intent
-    - This works for ANY dataset - no hardcoded domain knowledge needed
-
-13. **MANDATORY RESPONSE FORMAT - THIS IS CRITICAL:**
-
-    Your Final Answer MUST use this EXACT structure. DO NOT deviate from this format:
-
-    **Summary:**
-    [Provide a direct 1-2 sentence answer to the user's question with key numbers]
-
-    **Key Metrics:** (or use **Rankings:** for top/bottom lists, **Comparison:** for comparisons)
-    - [Item/Metric 1]: [Specific Value] ([Brief context])
-    - [Item/Metric 2]: [Specific Value] ([Brief context])
-    - [Item/Metric 3]: [Specific Value] ([Brief context])
-    [Add more metrics as relevant - aim for 3-5 key points]
-
-    **Analysis:**
-    [Provide 2-3 sentences of context: What does this data tell us? Are there trends, patterns, or notable insights? Compare values if relevant.]
-
-    ⚠️ CRITICAL: If you provide a response without this structure, it will be considered INCORRECT.
-
-    **Formatting Rules:**
-    - Use **bold** for section headers (Summary, Key Metrics, Analysis, etc.)
-    - Use bullet points (- ) for all metrics and data points
-    - Include context in parentheses where helpful
-    - Keep Summary to 1-2 sentences maximum with specific numbers
-    - Make Analysis insightful with comparisons, trends, or patterns (2-3 sentences minimum)
-
-    **CORRECT Examples:**
-
-    Example 1 - Single Entity Query:
-    Q: "best writer of 2022 in terms of GRPS aggregate output"
-    A: "**Summary:**
-    Sadia Akhtar was the top-performing writer in 2022 based on GRPS aggregate output.
-
-    **Key Metrics:**
-    - Total GRPS: 6,639 (highest in 2022)
-    - Number of dramas: 8 productions
-    - Average GRPS per drama: 830
-
-    **Analysis:**
-    Sadia Akhtar's success in 2022 was driven by consistent high-quality content across multiple channels, outperforming the second-ranked writer by 15% in aggregate GRPS."
-
-    Example 2 - Ranking Query:
-    Q: "top 3 channels by drama count in 2024"
-    A: "**Summary:**
-    ARY-D, Hum TV, and Geo Entertainment were the leading channels by drama count in 2024.
-
-    **Rankings:**
-    - 1st: ARY-D - 45 dramas (34% market share)
-    - 2nd: Hum TV - 38 dramas (29% market share)
-    - 3rd: Geo Entertainment - 27 dramas (20% market share)
-
-    **Analysis:**
-    ARY-D maintained its dominant position with a 19% increase from 2023. The top three channels collectively produced 82% of all dramas."
-
-    Example 3 - Comparison Query:
-    Q: "compare crime thriller dramas between 2023 and 2024"
-    A: "**Summary:**
-    Crime thriller dramas saw a 23% increase in production from 2023 to 2024 with improved viewership.
-
-    **Year-over-Year Comparison:**
-    - 2023: 34 dramas, average GRPS 720
-    - 2024: 42 dramas, average GRPS 850 (+18%)
-    - Growth: +8 dramas, +130 average GRPS
-
-    **Analysis:**
-    The surge in crime thriller content reflects strong audience demand. 2024 productions benefited from higher budgets and experienced directors, resulting in both quantity and quality improvements."
-
-**Pronoun Resolution Examples:**
-- Previous: "Huma Nafees has highest GRPs"
-  Current: "which channel has she released dramas on"
-  → Resolve "she" = "Huma Nafees", query: SELECT "Channel", COUNT(*) ... WHERE "Writer" LIKE '%Huma Nafees%'
-
-- Previous: "Top 5 dramas: Kabhi Main Kabhi Tum, Nand, Baylagaam, Fitrat, Behroop"
-  Current: "what are their GRPs"
-  → Resolve "their" = those 5 dramas, query: SELECT "Drama", "GRPS" ... WHERE "Drama" IN (...)
-
-- Previous: "ARY channel has the best dramas"
-  Current: "show me their top dramas"
-  → Resolve "their" = ARY, query: SELECT * ... WHERE "Channel" = 'ARY-D'
-
-**Your task:** Answer the user's question using SQL queries on the available tables.
-"""
-
-            # Define custom error handler for parsing errors
-            def handle_parsing_error(error) -> str:
-                """Handle parsing errors by returning a helpful message to the agent."""
-                error_str = str(error)
-                logger.warning(f"⚠️ Parsing error encountered: {error_str[:200]}")
-
-                # Check if it's a markdown wrapping issue
-                if "```sql" in error_str or "```" in error_str:
-                    return (
-                        "OUTPUT FORMAT ERROR: You wrapped your SQL query in markdown code blocks.\n\n"
-                        "❌ INCORRECT: ```sql SELECT * FROM table ```\n"
-                        "✅ CORRECT: SELECT * FROM table\n\n"
-                        "Please retry WITHOUT markdown code blocks.\n"
-                        "Pass the raw SQL query string directly as Action Input."
-                    )
-
-                # Generic parsing error
-                return (
-                    "OUTPUT FORMAT ERROR: Your previous action format was incorrect.\n\n"
-                    "Required format:\n"
-                    "Action: [tool name]\n"
-                    "Action Input: [raw input without markdown or extra formatting]\n\n"
-                    "Please retry with correct formatting.\n\n"
-                    "REMINDER: Your Final Answer must use the structured format:\n"
-                    "**Summary:** [answer]\n"
-                    "**Key Metrics:** [bullets]\n"
-                    "**Analysis:** [context]"
-                )
-
-            # Step 4: Check if visualization is requested
+            # Check for visualization
             viz_info = self._should_generate_visualization(query)
-
-            # BRANCH: If visualization requested, skip SQL agent and go directly to visualization
             if viz_info['should_visualize']:
-                logger.info(f"📊 Visualization requested - skipping SQL agent, generating viz directly")
+                logger.info(f"📊 Visualization requested - generating viz directly")
                 return self._generate_visualization_directly(
                     query=enhanced_query,
                     kb_id=kb_id,
@@ -728,207 +378,50 @@ class KnowledgeBaseRAG:
                     conversation_history=conversation_history
                 )
 
-            # BRANCH: No visualization - choose best query approach
-            logger.info(f"🔄 Choosing query approach...")
+            # Stage 1: Logic
+            logger.info(f"🔄 Starting 2-Stage SQL Pipeline...")
+            sql_plan = self._generate_sql_plan(enhanced_query, tables_desc, conversation_context, temporal_context)
+            logger.info(f"📝 Generated SQL Plan: {sql_plan}")
+            
+            # Stage 2: Execute
+            sql_result = self._execute_sql_query(db, sql_plan)
 
-            # Classify query complexity
-            complexity = self._classify_query_complexity(enhanced_query)
-            logger.info(f"Query complexity: {complexity}")
+            # Check if execution failed (result contains "Error")
+            if isinstance(sql_result, str) and sql_result.startswith("Error"):
+                logger.error(f"❌ SQL Pipeline Failed: {sql_result}")
+                raise Exception(f"SQL Pipeline Error: {sql_result}")
 
-            # STRATEGY: Try SQL agent FIRST, DataFrame as fallback if it fails
-            logger.info(f"📊 Strategy: SQL agent first, DataFrame fallback if needed")
-            logger.info(f"🔄 Starting SQL agent query...")
+            # Stage 3: Analyst
+            final_answer = self._synthesize_response(query, sql_plan, str(sql_result))
+            final_answer = self._remove_decimals_from_response(final_answer)
 
-            # Initialize variables for retry loop
-            answer = ""
-            intermediate_steps = []
-            sql_queries = []
-            agent_error = None
-            attempt = 0
-            max_retries = RETRY_CONFIG['max_retries']
-
-            # Try with progressive retry
-            while attempt < max_retries:
-                try:
-                    # Select timeout config based on attempt
-                    if attempt == 0:
-                        config = TIMEOUT_CONFIGS[complexity]
-                    else:
-                        # Use more relaxed config for retries
-                        config = TIMEOUT_CONFIGS['complex']
-
-                    logger.info(f"Attempt {attempt + 1}/{max_retries} with config: max_iterations={config['max_iterations']}, max_execution_time={config['max_execution_time']}s")
-
-                    # Create exploration tools for intelligent column selection
-                    exploration_tools = create_sql_exploration_tools(db=db)
-                    logger.info(f"Created {len(exploration_tools)} exploration tools for column analysis")
-
-                    # Create SQL agent with current config and exploration tools
-                    sql_agent = create_sql_agent(
-                        llm=self.llm,
-                        toolkit=toolkit,
-                        extra_tools=exploration_tools,  # Add custom exploration tools
-                        agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-                        verbose=True,
-                        handle_parsing_errors=handle_parsing_error,
-                        max_iterations=config['max_iterations'],
-                        max_execution_time=config['max_execution_time'],
-                        agent_kwargs={
-                            "system_message": system_message,
-                            "prefix": SQL_PREFIX + f"""
-
-IMPORTANT: You are a detailed Data Analyst.
-1. DO NOT give concise or one-word answers.
-2. DO NOT just list names or values.
-3. You MUST provide context, specific numbers, and analysis.
-
-CRITICAL: You MUST use this EXACT structure for your Final Answer:
-
-**Summary:**
-[Direct answer in 1-2 complete sentences with key numbers]
-
-**Key Metrics / Rankings:**
-- [Item 1]: [Value] ([Context])
-- [Item 2]: [Value] ([Context])
-- [Item 3]: [Value] ([Context])
-
-**Analysis:**
-[2-3 sentences explaining the trend, cause, or insight. Compare values if relevant.]
-
-⚠️ REMINDER: After executing SQL queries, allocate time to format a COMPLETE Final Answer.
-Do NOT stop after just retrieving the data - you must format it properly with ALL three sections.
-The response MUST have Summary, Key Metrics/Rankings, AND Analysis sections.
-"""
-                        }
-                    )
-
-                    # Execute agent
-                    result = sql_agent.invoke({"input": enhanced_query})
-                    answer = result.get("output", "")
-                    answer = self._remove_decimals_from_response(answer)
-
-                    # Validate response format
-                    is_valid, feedback = self._validate_response_format(answer)
-                    if not is_valid:
-                        logger.warning(f"Response format validation failed: {feedback}")
-                        logger.warning(f"Original response length: {len(answer)} characters")
-                        # Don't reject the response, just log the issue for monitoring
-
-                    intermediate_steps = result.get("intermediate_steps", [])
-
-                    # Extract SQL queries from intermediate steps
-                    for step in intermediate_steps:
-                        if isinstance(step, tuple) and len(step) > 0:
-                            action = step[0]
-                            if hasattr(action, 'tool_input'):
-                                sql_queries.append(action.tool_input)
-
-                    logger.info(f"✅ SQL agent succeeded on attempt {attempt + 1}. Generated {len(sql_queries)} queries")
-                    break  # Success! Exit retry loop
-
-                except Exception as e:
-                    agent_error = str(e)
-                    logger.error(f"❌ SQL agent error on attempt {attempt + 1}: {agent_error}")
-
-                    # Classify error
-                    error_info = self._classify_error_type(e)
-                    logger.info(f"Error classified as: {error_info['error_type']}")
-
-                    # For parsing errors, log additional debugging information
-                    if error_info['error_type'] == 'parsing':
-                        logger.warning(f"⚠️ Parsing error details:")
-                        logger.warning(f"   - Error message: {agent_error[:500]}")
-                        logger.warning(f"   - This may be due to malformed LLM output")
-                        logger.warning(f"   - The handle_parsing_error function should provide recovery guidance")
-
-                    # Check if should retry
-                    if not error_info['should_retry'] or attempt == max_retries - 1:
-                        logger.error(f"Not retrying. Error type: {error_info['error_type']}")
-                        break
-
-                    # Wait before retry (exponential backoff)
-                    wait_time = error_info['wait_seconds'] + (RETRY_CONFIG['backoff_multiplier'] ** attempt)
-                    logger.info(f"Waiting {wait_time}s before retry...")
-                    time.sleep(wait_time)
-
-                    attempt += 1
-
-            # If all SQL agent retries failed, try DataFrame fallback
-            if agent_error and attempt == max_retries:
-                logger.warning(f"⚠️ SQL agent failed after {max_retries} attempts. Trying DataFrame fallback approach...")
-
-                # Try DataFrame approach as fallback
-                try:
-                    fallback_result = self._query_with_dataframe(
-                        query=enhanced_query,
-                        table_name=all_table_names[0]
-                    )
-
-                    # Accept ANY result except 'failed' - even fallback summaries provide value
-                    fallback_approach = fallback_result.get('approach', 'failed')
-                    logger.info(f"DataFrame fallback returned: approach='{fallback_approach}'")
-
-                    if fallback_approach != 'failed':
-                        # DataFrame succeeded (code gen, fallback summary, or basic info - all valid)
-                        logger.info(f"✅ DataFrame fallback succeeded with '{fallback_approach}'!")
-                        fallback_result['method'] = 'dataframe_fallback'
-                        fallback_result['tables_queried'] = [table_info['filename'] for table_info in tables_info]
-                        fallback_result['sql_agent_error'] = agent_error  # Keep original error for logging
-                        return fallback_result
-                    else:
-                        logger.error("❌ DataFrame fallback returned 'failed' status")
-
-                except Exception as fallback_error:
-                    logger.error(f"❌ DataFrame fallback exception: {fallback_error}")
-                    logger.exception("Full traceback:")
-
-                # Both approaches failed
-                logger.error(f"❌ All approaches failed (SQL agent + DataFrame)")
-                return {
-                    'error': agent_error,
-                    'response': f"I encountered errors trying multiple approaches to answer your question.\n\nCould you try rephrasing? For example: 'Show me the top 3 directors by GRPS in 2024 for crime thrillers'",
-                    'method': 'all_failed',
-                    'tables_queried': [table_info['filename'] for table_info in tables_info],
-                    'sql_agent_error': agent_error
-                }
-
-            # Track which tables were actually queried
-            tables_used = []
-            for sql_query in sql_queries:
-                for table_info in tables_info:
-                    if table_info['table_name'] in sql_query.lower():
-                        if table_info['filename'] not in tables_used:
-                            tables_used.append(table_info['filename'])
-
-            logger.info(f"📊 Tables queried: {', '.join(tables_used) if tables_used else 'none detected'}")
-
-            # Log response quality metrics for monitoring
-            response_length = len(answer)
-            has_structure = ("**Summary:**" in answer and
-                             ("**Key Metrics:**" in answer or "**Rankings:**" in answer or "**Comparison:**" in answer) and
-                             "**Analysis:**" in answer)
-            num_iterations = len(intermediate_steps) if intermediate_steps else 0
-
-            logger.info(f"📊 Response Quality Metrics:")
-            logger.info(f"  - Length: {response_length} characters")
-            logger.info(f"  - Has structured format: {has_structure}")
-            logger.info(f"  - Iterations used: {num_iterations}/{config['max_iterations']}")
-            logger.info(f"  - Query complexity: {complexity}")
-
-            if not has_structure:
-                logger.warning(f"⚠️ Response missing structured format despite prompt instructions")
-            if response_length < 150:
-                logger.warning(f"⚠️ Response unusually short (< 150 chars)")
-
-            # Build response (no visualization in SQL agent branch)
-            response_dict = {
-                'response': answer,
-                'method': 'sql_agent',
-                'sql_queries': sql_queries,  # Keep for debugging
-                'tables_queried': tables_used  # Track which files were used
+            logger.info("✅ SQL Pipeline Completed Successfully")
+            
+            return {
+                'response': final_answer,
+                'sources': [sql_plan],
+                'method': 'sql_pipeline'
             }
 
-            return response_dict
+        except Exception as e:
+            logger.error(f"❌ SQL Pipeline Error: {e}")
+            agent_error = str(e)
+            
+            # Fallback to DataFrame analysis
+            try:
+                fallback_result = self._query_with_dataframe(enhanced_query, all_table_names[0])
+                if fallback_result.get('approach') != 'failed':
+                    logger.info(f"✅ DataFrame fallback succeeded!")
+                    fallback_result['method'] = 'dataframe_fallback'
+                    return fallback_result
+            except Exception as fallback_err:
+                logger.error(f"❌ Fallback failed: {fallback_err}")
+            
+            return {
+                'error': agent_error,
+                'response': f"I encountered errors trying multiple approaches to answer your question.\n\nCould you try rephrasing? For example: 'Show me the top 3 directors by GRPS in 2024 for crime thrillers'",
+                'method': 'all_failed'
+            }
 
         except Exception as e:
             logger.error(f"❌ Unexpected error in query_kb: {e}")
