@@ -78,10 +78,72 @@ class KnowledgeBaseRAG:
         """
         logger.info(f"Initializing KnowledgeBaseRAG with SQL agent")
 
-        self.llm = llm
+        # Wrap LLM with markdown stripping to prevent parsing errors
+        self.llm = self._create_markdown_stripping_llm(llm)
         self.supabase = supabase_client
 
         logger.info("✅ KB engine ready (SQL agent mode)")
+
+    def _create_markdown_stripping_llm(self, base_llm):
+        """
+        Create a wrapper around the LLM that strips markdown code blocks from outputs.
+        This prevents parsing errors when LLM wraps SQL queries in ```sql or ````tool_code blocks.
+        """
+        from langchain.schema import BaseMessage, AIMessage
+        import re
+
+        class MarkdownStrippingLLM:
+            def __init__(self, llm):
+                self.llm = llm
+                # Copy all attributes from base LLM
+                for attr in dir(llm):
+                    if not attr.startswith('_') and attr not in ['invoke', 'generate', 'predict']:
+                        try:
+                            setattr(self, attr, getattr(llm, attr))
+                        except:
+                            pass
+
+            def _strip_markdown(self, text: str) -> str:
+                """Strip markdown code blocks from text."""
+                # Remove ```sql ... ``` blocks
+                text = re.sub(r'```sql\s*(.*?)\s*```', r'\1', text, flags=re.DOTALL)
+                # Remove ``` ... ``` blocks
+                text = re.sub(r'```\w*\s*(.*?)\s*```', r'\1', text, flags=re.DOTALL)
+                # Remove ````tool_code ... ```` blocks (4 backticks)
+                text = re.sub(r'````\w*\s*(.*?)\s*````', r'\1', text, flags=re.DOTALL)
+                return text.strip()
+
+            def invoke(self, *args, **kwargs):
+                """Invoke LLM and strip markdown from response."""
+                result = self.llm.invoke(*args, **kwargs)
+                if hasattr(result, 'content'):
+                    result.content = self._strip_markdown(result.content)
+                return result
+
+            def generate(self, *args, **kwargs):
+                """Generate and strip markdown from response."""
+                result = self.llm.generate(*args, **kwargs)
+                # Strip markdown from all generations
+                for generations in result.generations:
+                    for gen in generations:
+                        if hasattr(gen, 'text'):
+                            gen.text = self._strip_markdown(gen.text)
+                        if hasattr(gen, 'message') and hasattr(gen.message, 'content'):
+                            gen.message.content = self._strip_markdown(gen.message.content)
+                return result
+
+            def predict(self, *args, **kwargs):
+                """Predict and strip markdown from response."""
+                result = self.llm.predict(*args, **kwargs)
+                if isinstance(result, str):
+                    return self._strip_markdown(result)
+                return result
+
+            def __getattr__(self, name):
+                """Proxy all other attributes to base LLM."""
+                return getattr(self.llm, name)
+
+        return MarkdownStrippingLLM(base_llm)
 
     def _remove_decimals_from_response(self, response: str) -> str:
         """
@@ -480,9 +542,21 @@ class KnowledgeBaseRAG:
 10. **FORMAT NUMBERS AS WHOLE INTEGERS - do not include decimal places in your responses**
     Example: Say "GRPS is 3159" NOT "GRPS is 3159.682"
 
-11. **DO NOT WRAP ACTION INPUTS IN MARKDOWN**:
-    - INCORRECT: ```sql SELECT * FROM table ```
-    - CORRECT: SELECT * FROM table
+11. **❌ CRITICAL: NEVER WRAP SQL QUERIES IN MARKDOWN CODE BLOCKS ❌**:
+    When using the sql_db_query tool, provide the BARE SQL query string without any formatting:
+
+    ❌ INCORRECT FORMATS (DO NOT USE):
+    - ```sql SELECT * FROM table```
+    - ```SELECT * FROM table```
+    - ````tool_code SELECT * FROM table````
+    - ````SELECT * FROM table````
+    - Any variation with backticks (`, ``, ```, ````)
+
+    ✅ CORRECT FORMAT (ALWAYS USE THIS):
+    - SELECT * FROM table
+    - Just the raw SQL query text, no wrapping, no backticks, no code blocks
+
+    This is CRITICAL: Wrapping in markdown will cause parsing errors and query failure.
 
 12. **TEXT PATTERN MATCHING STRATEGY:**
 
